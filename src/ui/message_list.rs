@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use cosmic::iced::Length;
 use cosmic::widget;
 use cosmic::Element;
@@ -8,20 +10,46 @@ use crate::core::models::MessageSummary;
 /// Render the message list for the selected folder.
 pub fn view<'a>(
     messages: &'a [MessageSummary],
-    selected: Option<usize>,
+    visible_indices: &[usize],
+    selected: Option<usize>, // real index into messages
     has_more: bool,
+    collapsed_threads: &HashSet<u64>,
+    thread_sizes: &HashMap<u64, usize>,
 ) -> Element<'a, Message> {
     let mut col = widget::column().spacing(2).padding(8);
 
     if messages.is_empty() {
         col = col.push(widget::text::body("No messages"));
     } else {
-        for (i, msg) in messages.iter().enumerate() {
-            let _is_selected = selected == Some(i);
+        for &real_index in visible_indices {
+            let msg = &messages[real_index];
+            let is_selected = selected == Some(real_index);
 
             let star = if msg.is_starred { "★ " } else { "" };
             let unread = if !msg.is_read { "● " } else { "" };
-            let subject_text = format!("{}{}{}", unread, star, msg.subject);
+
+            // Thread collapse/expand indicator for root messages with children
+            let thread_indicator = if msg.thread_depth == 0 {
+                if let Some(tid) = msg.thread_id {
+                    let size = thread_sizes.get(&tid).copied().unwrap_or(1);
+                    if size > 1 {
+                        if collapsed_threads.contains(&tid) {
+                            format!("▶ ({}) ", size - 1)
+                        } else {
+                            "▼ ".to_string()
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            let subject_text =
+                format!("{}{}{}{}", unread, star, thread_indicator, msg.subject);
             let subject = widget::text::body(subject_text);
             let meta = widget::text::caption(format!("{} — {}", msg.from, msg.date));
 
@@ -30,9 +58,13 @@ pub fn view<'a>(
             let row_content = widget::column().push(subject).push(meta).spacing(2);
             let padded = widget::container(row_content).padding([0, 0, 0, indent]);
 
-            let btn = widget::button::custom(padded)
-                .on_press(Message::SelectMessage(i))
+            let mut btn = widget::button::custom(padded)
+                .on_press(Message::SelectMessage(real_index))
                 .width(Length::Fill);
+
+            if is_selected {
+                btn = btn.class(cosmic::theme::Button::Suggested);
+            }
 
             col = col.push(btn);
         }

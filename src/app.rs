@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use cosmic::app::{Core, Task};
-use cosmic::iced::Length;
+use cosmic::iced::keyboard;
+use cosmic::iced::{Event, Length, Subscription};
 use cosmic::widget;
 use cosmic::Element;
 
@@ -36,6 +37,13 @@ pub struct AppModel {
 
     /// Map folder paths (e.g. "Trash", "Archive") to mailbox hashes
     folder_map: HashMap<String, u64>,
+
+    /// Thread IDs that are currently collapsed (children hidden)
+    collapsed_threads: HashSet<u64>,
+    /// Maps visible row positions → real indices into `messages`
+    visible_indices: Vec<usize>,
+    /// Total messages per thread_id (for collapse indicators)
+    thread_sizes: HashMap<u64, usize>,
 
     is_syncing: bool,
     status_message: String,
@@ -84,6 +92,12 @@ pub enum Message {
         envelope_hash: u64,
         result: Result<(), String>,
     },
+
+    // Keyboard navigation
+    SelectionUp,
+    SelectionDown,
+    ActivateSelection,
+    ToggleThreadCollapse,
 
     OpenLink(String),
     Refresh,
@@ -141,6 +155,9 @@ impl cosmic::Application for AppModel {
             has_more_messages: false,
             preview_body: String::new(),
             folder_map: HashMap::new(),
+            collapsed_threads: HashSet::new(),
+            visible_indices: Vec::new(),
+            thread_sizes: HashMap::new(),
             is_syncing: false,
             status_message: "Starting up...".into(),
 
@@ -265,12 +282,53 @@ impl cosmic::Application for AppModel {
         Some(dialog.into())
     }
 
+    fn subscription(&self) -> Subscription<Self::Message> {
+        cosmic::iced_futures::event::listen_raw(|event, status, _| {
+            if cosmic::iced_core::event::Status::Ignored != status {
+                return None;
+            }
+            match event {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key, modifiers, ..
+                }) => match key {
+                    keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                        Some(Message::SelectionDown)
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                        Some(Message::SelectionUp)
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                        Some(Message::ActivateSelection)
+                    }
+                    keyboard::Key::Character(ref c)
+                        if c.as_str() == "j" && !modifiers.control() =>
+                    {
+                        Some(Message::SelectionDown)
+                    }
+                    keyboard::Key::Character(ref c)
+                        if c.as_str() == "k" && !modifiers.control() =>
+                    {
+                        Some(Message::SelectionUp)
+                    }
+                    keyboard::Key::Character(ref c) if c.as_str() == " " => {
+                        Some(Message::ToggleThreadCollapse)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+    }
+
     fn view(&self) -> Element<'_, Self::Message> {
         let sidebar = crate::ui::sidebar::view(&self.folders, self.selected_folder);
         let message_list = crate::ui::message_list::view(
             &self.messages,
+            &self.visible_indices,
             self.selected_message,
             self.has_more_messages,
+            &self.collapsed_threads,
+            &self.thread_sizes,
         );
         let selected_msg = self.selected_message.and_then(|i| {
             self.messages.get(i).map(|msg| (i, msg))
@@ -463,6 +521,8 @@ impl cosmic::Application for AppModel {
                     self.messages.extend(messages);
                 }
 
+                self.recompute_visible();
+
                 if !self.messages.is_empty() {
                     self.status_message =
                         format!("{} messages", self.messages.len());
@@ -648,6 +708,8 @@ impl cosmic::Application for AppModel {
                 self.preview_body.clear();
                 self.messages_offset = 0;
                 self.has_more_messages = false;
+                self.collapsed_threads.clear();
+                self.recompute_visible();
 
                 if let Some(folder) = self.folders.get(index) {
                     let mailbox_hash = folder.mailbox_hash;
@@ -695,6 +757,7 @@ impl cosmic::Application for AppModel {
                 self.is_syncing = false;
                 self.status_message = format!("{} messages", messages.len());
                 self.messages = messages;
+                self.recompute_visible();
             }
             Message::MessagesLoaded(Err(e)) => {
                 self.is_syncing = false;
@@ -910,6 +973,7 @@ impl cosmic::Application for AppModel {
                                 self.preview_body.clear();
                             }
                         }
+                        self.recompute_visible();
 
                         let mut tasks: Vec<Task<Message>> = Vec::new();
 
@@ -966,6 +1030,7 @@ impl cosmic::Application for AppModel {
                                 self.preview_body.clear();
                             }
                         }
+                        self.recompute_visible();
 
                         let mut tasks: Vec<Task<Message>> = Vec::new();
 
@@ -1072,6 +1137,77 @@ impl cosmic::Application for AppModel {
                 }
             }
 
+            // -----------------------------------------------------------------
+            // Keyboard navigation
+            // -----------------------------------------------------------------
+            Message::SelectionDown => {
+                if self.messages.is_empty() {
+                    return Task::none();
+                }
+                let current_vis_pos = self
+                    .selected_message
+                    .and_then(|sel| self.visible_indices.iter().position(|&ri| ri == sel));
+                let new_vis_pos = match current_vis_pos {
+                    Some(pos) => (pos + 1).min(self.visible_indices.len().saturating_sub(1)),
+                    None => 0,
+                };
+                if let Some(&real_index) = self.visible_indices.get(new_vis_pos) {
+                    self.selected_message = Some(real_index);
+                    return self.update(Message::SelectMessage(real_index));
+                }
+            }
+
+            Message::SelectionUp => {
+                if self.messages.is_empty() {
+                    return Task::none();
+                }
+                let current_vis_pos = self
+                    .selected_message
+                    .and_then(|sel| self.visible_indices.iter().position(|&ri| ri == sel));
+                let new_vis_pos = match current_vis_pos {
+                    Some(pos) => pos.saturating_sub(1),
+                    None => 0,
+                };
+                if let Some(&real_index) = self.visible_indices.get(new_vis_pos) {
+                    self.selected_message = Some(real_index);
+                    return self.update(Message::SelectMessage(real_index));
+                }
+            }
+
+            Message::ActivateSelection => {
+                if let Some(index) = self.selected_message {
+                    return self.update(Message::SelectMessage(index));
+                }
+            }
+
+            Message::ToggleThreadCollapse => {
+                if let Some(index) = self.selected_message {
+                    if let Some(msg) = self.messages.get(index) {
+                        if let Some(tid) = msg.thread_id {
+                            let size = self.thread_sizes.get(&tid).copied().unwrap_or(1);
+                            if size > 1 {
+                                if self.collapsed_threads.contains(&tid) {
+                                    // Expand
+                                    self.collapsed_threads.remove(&tid);
+                                } else {
+                                    // Collapse — if selected message is a child, jump to root
+                                    self.collapsed_threads.insert(tid);
+                                    if msg.thread_depth > 0 {
+                                        // Find the thread root (first message with this thread_id and depth 0)
+                                        if let Some(root_idx) = self.messages.iter().position(|m| {
+                                            m.thread_id == Some(tid) && m.thread_depth == 0
+                                        }) {
+                                            self.selected_message = Some(root_idx);
+                                        }
+                                    }
+                                }
+                                self.recompute_visible();
+                            }
+                        }
+                    }
+                }
+            }
+
             Message::OpenLink(url) => {
                 crate::core::mime::open_link(&url);
             }
@@ -1101,6 +1237,31 @@ impl cosmic::Application for AppModel {
 impl AppModel {
     fn set_window_title(&self, title: String) -> cosmic::app::Task<Message> {
         self.core.set_title(self.core.main_window_id(), title)
+    }
+
+    /// Rebuild `visible_indices` and `thread_sizes` based on current messages
+    /// and collapsed state.
+    fn recompute_visible(&mut self) {
+        // Rebuild thread_sizes
+        self.thread_sizes.clear();
+        for msg in &self.messages {
+            if let Some(tid) = msg.thread_id {
+                *self.thread_sizes.entry(tid).or_insert(0) += 1;
+            }
+        }
+
+        // Rebuild visible_indices: hide children of collapsed threads
+        self.visible_indices.clear();
+        for (i, msg) in self.messages.iter().enumerate() {
+            if msg.thread_depth > 0 {
+                if let Some(tid) = msg.thread_id {
+                    if self.collapsed_threads.contains(&tid) {
+                        continue; // hidden child
+                    }
+                }
+            }
+            self.visible_indices.push(i);
+        }
     }
 
     /// Rebuild folder_map from current folders list.

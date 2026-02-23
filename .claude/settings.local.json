@@ -9,7 +9,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(cargo check:*)",
       "Bash(cargo update:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(tail:*)"
     ]
   }
 }

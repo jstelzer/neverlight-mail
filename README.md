@@ -56,9 +56,12 @@ Data flows: IMAP (via melib) → domain models → SQLite cache → COSMIC widge
 - [x] **Phase 2a**: Credential management (config file + OS keyring + setup dialog)
 - [x] **Phase 2b**: Flags + actions (seen/star toggles, archive, delete, move)
 - [x] **Phase 2c**: Threading (compute from headers, store in cache, render with indentation)
-- [ ] **Phase 2d**: Keyboard shortcuts (j/k navigation, action keys, thread collapse)
-- [ ] **Phase 3**: Compose + send (SMTP via lettre)
+- [x] **Phase 2d**: Keyboard shortcuts (j/k navigation, action keys, thread collapse)
+- [x] **Phase 3**: Compose + send (SMTP via lettre)
 - [ ] **Phase 4**: Search, OAuth2, multiple accounts, attachment handling
+- [ ] **Phase 5**: Attachments/Download
+- [ ] **Phase 6**: Figure out html rendering and consider adding https://github.com/Mrmayman/frostmark
+- [ ] **Phase 7**: Background task / notifications
 
 ### Phase 2b–d design notes
 
