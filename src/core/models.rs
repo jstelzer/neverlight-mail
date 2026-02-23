@@ -24,6 +24,9 @@ pub struct MessageSummary {
     pub envelope_hash: u64,
     pub timestamp: i64,
     pub mailbox_hash: u64,
+    pub message_id: String,
+    pub in_reply_to: Option<String>,
+    pub thread_depth: u32,
 }
 
 /// Full message body for the preview pane.

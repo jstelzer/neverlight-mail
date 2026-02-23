@@ -25,9 +25,12 @@ pub fn view<'a>(
             let subject = widget::text::body(subject_text);
             let meta = widget::text::caption(format!("{} — {}", msg.from, msg.date));
 
+            let depth = msg.thread_depth.min(4);
+            let indent = (depth as u16) * 16;
             let row_content = widget::column().push(subject).push(meta).spacing(2);
+            let padded = widget::container(row_content).padding([0, 0, 0, indent]);
 
-            let btn = widget::button::custom(row_content)
+            let btn = widget::button::custom(padded)
                 .on_press(Message::SelectMessage(i))
                 .width(Length::Fill);
 

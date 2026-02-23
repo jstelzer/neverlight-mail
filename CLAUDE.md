@@ -108,9 +108,6 @@ Key types and their locations in melib 0.8.13:
 
 ## Known Limitations (Phase 0)
 
-- **No local cache** — full envelope download on every startup (slow for large mailboxes)
-- **No pagination** — fetches all messages in a folder
-- **No credential UI** — env vars only
 - **No SMTP** — read-only (lettre dep exists but isn't wired)
 - **No search, no threading, no attachment download**
 

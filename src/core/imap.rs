@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use melib::backends::{BackendEventConsumer, EnvelopeHashBatch, FlagOp, IsSubscribedFn, MailBackend};
 use melib::conf::AccountSettings;
+use melib::email::address::MessageID;
 use melib::email::attachment_types::{ContentType, Text};
 use melib::imap::ImapType;
 use melib::{AccountHash, EnvelopeHash, Mail, MailboxHash};
@@ -162,6 +163,14 @@ impl ImapSession {
                     .collect::<Vec<_>>()
                     .join(", ");
 
+                let msg_id = envelope.message_id().to_string();
+                let refs = envelope.references();
+                let thread_id = Some(compute_thread_id(&msg_id, refs));
+                let thread_depth = refs.len() as u32;
+                let in_reply_to = envelope
+                    .in_reply_to()
+                    .and_then(|r| r.refs().last().map(|id| id.to_string()));
+
                 messages.push(MessageSummary {
                     uid: envelope.hash().0,
                     subject: envelope.subject().to_string(),
@@ -170,16 +179,16 @@ impl ImapSession {
                     is_read: envelope.is_seen(),
                     is_starred: envelope.flags().is_flagged(),
                     has_attachments: envelope.has_attachments,
-                    thread_id: None,
+                    thread_id,
                     envelope_hash: envelope.hash().0,
                     timestamp: envelope.timestamp as i64,
                     mailbox_hash: mailbox_hash.0,
+                    message_id: msg_id,
+                    in_reply_to,
+                    thread_depth,
                 });
             }
         }
-
-        // Most recent first
-        messages.reverse();
 
         Ok(messages)
     }
@@ -260,6 +269,20 @@ impl ImapSession {
             text_html.as_deref(),
         ))
     }
+}
+
+/// Compute a deterministic thread ID from the root message-ID in the References chain.
+/// If references exist, the root is references[0] (the original message).
+/// Otherwise, this message IS the root and we hash its own message-ID.
+fn compute_thread_id(message_id: &str, references: &[MessageID]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Some(root) = references.first() {
+        root.to_string().hash(&mut hasher);
+    } else {
+        message_id.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Walk the MIME tree and extract text/plain and text/html parts.
