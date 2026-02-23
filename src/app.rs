@@ -7,7 +7,7 @@ use cosmic::Element;
 
 use melib::{EnvelopeHash, MailboxHash};
 
-use crate::config::Config;
+use crate::config::{Config, ConfigNeedsInput, FileConfig, PasswordBackend};
 use crate::core::imap::ImapSession;
 use crate::core::models::{Folder, MessageSummary};
 use crate::core::store::{CacheHandle, DEFAULT_PAGE_SIZE};
@@ -16,7 +16,7 @@ const APP_ID: &str = "com.cosmic_utils.email";
 
 pub struct AppModel {
     core: Core,
-    config: Config,
+    config: Option<Config>,
 
     session: Option<Arc<ImapSession>>,
     cache: Option<CacheHandle>,
@@ -33,6 +33,17 @@ pub struct AppModel {
 
     is_syncing: bool,
     status_message: String,
+
+    // Setup dialog state
+    show_setup_dialog: bool,
+    password_only_mode: bool,
+    setup_server: String,
+    setup_port: String,
+    setup_username: String,
+    setup_password: String,
+    setup_starttls: bool,
+    setup_password_visible: bool,
+    setup_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +68,16 @@ pub enum Message {
     OpenLink(String),
     Refresh,
     Noop,
+
+    // Setup dialog messages
+    SetupServerChanged(String),
+    SetupPortChanged(String),
+    SetupUsernameChanged(String),
+    SetupPasswordChanged(String),
+    SetupStarttlsToggled(bool),
+    SetupPasswordVisibilityToggled,
+    SetupSubmit,
+    SetupCancel,
 }
 
 impl cosmic::Application for AppModel {
@@ -75,8 +96,6 @@ impl cosmic::Application for AppModel {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        let config = Config::from_env();
-
         // Open cache synchronously (just opens a file, fast)
         let cache = match CacheHandle::open() {
             Ok(c) => {
@@ -89,9 +108,9 @@ impl cosmic::Application for AppModel {
             }
         };
 
-        let app = AppModel {
+        let mut app = AppModel {
             core,
-            config: config.clone(),
+            config: None,
             session: None,
             cache: cache.clone(),
             folders: Vec::new(),
@@ -101,28 +120,128 @@ impl cosmic::Application for AppModel {
             messages_offset: 0,
             has_more_messages: false,
             preview_body: String::new(),
-            is_syncing: true,
+            is_syncing: false,
             status_message: "Starting up...".into(),
+
+            show_setup_dialog: false,
+            password_only_mode: false,
+            setup_server: String::new(),
+            setup_port: "993".into(),
+            setup_username: String::new(),
+            setup_password: String::new(),
+            setup_starttls: false,
+            setup_password_visible: false,
+            setup_error: None,
         };
 
         let title_task = app.set_window_title("Nevermail".into());
-
-        // Fire two parallel tasks: load cache + connect to IMAP
         let mut tasks = vec![title_task];
 
-        // 1. Load cached folders (instant)
-        if let Some(cache) = cache {
+        // Load cached folders regardless of config state
+        if let Some(cache) = cache.clone() {
             tasks.push(cosmic::task::future(async move {
                 Message::CachedFoldersLoaded(cache.load_folders().await)
             }));
         }
 
-        // 2. Connect to IMAP (slow, runs in background)
-        tasks.push(cosmic::task::future(async move {
-            Message::Connected(ImapSession::connect(config).await)
-        }));
+        // Resolve config: env → file+keyring → show dialog
+        match Config::resolve() {
+            Ok(config) => {
+                app.config = Some(config.clone());
+                app.is_syncing = true;
+                tasks.push(cosmic::task::future(async move {
+                    Message::Connected(ImapSession::connect(config).await)
+                }));
+            }
+            Err(ConfigNeedsInput::FullSetup) => {
+                app.show_setup_dialog = true;
+                app.password_only_mode = false;
+                app.status_message = "Setup required — enter your account details".into();
+            }
+            Err(ConfigNeedsInput::PasswordOnly {
+                server,
+                port,
+                username,
+                starttls,
+                error,
+            }) => {
+                app.show_setup_dialog = true;
+                app.password_only_mode = true;
+                app.setup_server = server;
+                app.setup_port = port.to_string();
+                app.setup_username = username;
+                app.setup_starttls = starttls;
+                app.setup_error = error;
+                app.status_message = "Password required".into();
+            }
+        }
 
         (app, cosmic::task::batch(tasks))
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        if !self.show_setup_dialog {
+            return None;
+        }
+
+        let mut controls = widget::column().spacing(12);
+
+        if !self.password_only_mode {
+            controls = controls
+                .push(
+                    widget::text_input("mail.example.com", &self.setup_server)
+                        .label("IMAP Server")
+                        .on_input(Message::SetupServerChanged),
+                )
+                .push(
+                    widget::text_input("993", &self.setup_port)
+                        .label("Port")
+                        .on_input(Message::SetupPortChanged),
+                )
+                .push(
+                    widget::text_input("you@example.com", &self.setup_username)
+                        .label("Username")
+                        .on_input(Message::SetupUsernameChanged),
+                );
+        }
+
+        controls = controls.push(
+            widget::text_input::secure_input(
+                "Password",
+                &self.setup_password,
+                Some(Message::SetupPasswordVisibilityToggled),
+                !self.setup_password_visible,
+            )
+            .label("Password")
+            .on_input(Message::SetupPasswordChanged),
+        );
+
+        if !self.password_only_mode {
+            controls = controls.push(
+                widget::settings::item::builder("Use STARTTLS")
+                    .toggler(self.setup_starttls, Message::SetupStarttlsToggled),
+            );
+        }
+
+        let mut dialog = widget::dialog()
+            .title(if self.password_only_mode {
+                "Enter Password"
+            } else {
+                "Account Setup"
+            })
+            .control(controls)
+            .primary_action(
+                widget::button::suggested("Connect").on_press(Message::SetupSubmit),
+            )
+            .secondary_action(
+                widget::button::standard("Cancel").on_press(Message::SetupCancel),
+            );
+
+        if let Some(ref err) = self.setup_error {
+            dialog = dialog.body(err.as_str());
+        }
+
+        Some(dialog.into())
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -166,6 +285,116 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             // -----------------------------------------------------------------
+            // Setup dialog input handlers
+            // -----------------------------------------------------------------
+            Message::SetupServerChanged(v) => {
+                self.setup_server = v;
+            }
+            Message::SetupPortChanged(v) => {
+                self.setup_port = v;
+            }
+            Message::SetupUsernameChanged(v) => {
+                self.setup_username = v;
+            }
+            Message::SetupPasswordChanged(v) => {
+                self.setup_password = v;
+            }
+            Message::SetupStarttlsToggled(v) => {
+                self.setup_starttls = v;
+            }
+            Message::SetupPasswordVisibilityToggled => {
+                self.setup_password_visible = !self.setup_password_visible;
+            }
+
+            // -----------------------------------------------------------------
+            // Setup submit — validate, store credentials, connect
+            // -----------------------------------------------------------------
+            Message::SetupSubmit => {
+                // Validate
+                if self.setup_server.trim().is_empty()
+                    || self.setup_username.trim().is_empty()
+                    || self.setup_password.is_empty()
+                {
+                    self.setup_error = Some("All fields are required".into());
+                    return Task::none();
+                }
+                let port: u16 = match self.setup_port.trim().parse() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        self.setup_error = Some("Port must be a number (e.g. 993)".into());
+                        return Task::none();
+                    }
+                };
+
+                let server = self.setup_server.trim().to_string();
+                let username = self.setup_username.trim().to_string();
+                let password = self.setup_password.clone();
+                let starttls = self.setup_starttls;
+
+                // Try keyring first; fall back to plaintext on failure
+                let password_backend =
+                    match crate::core::keyring::set_password(&username, &password) {
+                        Ok(()) => {
+                            log::info!("Password stored in keyring");
+                            PasswordBackend::Keyring
+                        }
+                        Err(e) => {
+                            log::warn!("Keyring unavailable ({}), using plaintext", e);
+                            PasswordBackend::Plaintext {
+                                value: password.clone(),
+                            }
+                        }
+                    };
+
+                // Save config file
+                let fc = FileConfig {
+                    server: server.clone(),
+                    port,
+                    username: username.clone(),
+                    starttls,
+                    password: password_backend,
+                };
+                if let Err(e) = fc.save() {
+                    log::error!("Failed to save config: {}", e);
+                    self.setup_error = Some(format!("Failed to save config: {e}"));
+                    return Task::none();
+                }
+
+                // Build runtime config and connect
+                let config = Config {
+                    imap_server: server,
+                    imap_port: port,
+                    username,
+                    password,
+                    use_starttls: starttls,
+                };
+
+                self.config = Some(config.clone());
+                self.show_setup_dialog = false;
+                self.setup_password.clear();
+                self.setup_error = None;
+                self.is_syncing = true;
+                self.status_message = "Connecting...".into();
+
+                return cosmic::task::future(async move {
+                    Message::Connected(ImapSession::connect(config).await)
+                });
+            }
+
+            // -----------------------------------------------------------------
+            // Setup cancel — browse offline or show empty
+            // -----------------------------------------------------------------
+            Message::SetupCancel => {
+                self.show_setup_dialog = false;
+                if self.folders.is_empty() {
+                    self.status_message = "Not connected — no cached data".into();
+                } else {
+                    self.status_message =
+                        format!("{} folders (offline)", self.folders.len());
+                }
+            }
+
+            // -----------------------------------------------------------------
             // Cache-first: cached folders loaded at startup
             // -----------------------------------------------------------------
             Message::CachedFoldersLoaded(Ok(folders)) => {
@@ -194,7 +423,6 @@ impl cosmic::Application for AppModel {
             }
             Message::CachedFoldersLoaded(Err(e)) => {
                 log::warn!("Failed to load cached folders: {}", e);
-                // Not fatal — IMAP connect will populate folders
             }
 
             // -----------------------------------------------------------------
@@ -205,10 +433,8 @@ impl cosmic::Application for AppModel {
                 self.has_more_messages = count as u32 == DEFAULT_PAGE_SIZE;
 
                 if self.messages_offset == 0 {
-                    // First page: replace
                     self.messages = messages;
                 } else {
-                    // Subsequent pages: append
                     self.messages.extend(messages);
                 }
 
@@ -241,7 +467,6 @@ impl cosmic::Application for AppModel {
                 let cache = self.cache.clone();
                 return cosmic::task::future(async move {
                     let result = session.fetch_folders().await;
-                    // Save to cache if available
                     if let (Some(cache), Ok(ref folders)) = (&cache, &result) {
                         if let Err(e) = cache.save_folders(folders.clone()).await {
                             log::warn!("Failed to cache folders: {}", e);
@@ -252,8 +477,19 @@ impl cosmic::Application for AppModel {
             }
             Message::Connected(Err(e)) => {
                 self.is_syncing = false;
-                // Only show error if we have no cached data
-                if self.folders.is_empty() {
+                log::error!("IMAP connection failed: {}", e);
+
+                if self.folders.is_empty() && !self.show_setup_dialog {
+                    // No cached data and not already showing dialog — re-show with error
+                    self.show_setup_dialog = true;
+                    // Preserve password_only_mode from previous state if config exists,
+                    // otherwise show full setup
+                    if self.config.is_some() {
+                        self.password_only_mode = false;
+                    }
+                    self.setup_error = Some(format!("Connection failed: {e}"));
+                    self.status_message = format!("Connection failed: {}", e);
+                } else if self.folders.is_empty() {
                     self.status_message = format!("Connection failed: {}", e);
                 } else {
                     self.status_message = format!(
@@ -262,7 +498,6 @@ impl cosmic::Application for AppModel {
                         e
                     );
                 }
-                log::error!("IMAP connection failed: {}", e);
             }
 
             // -----------------------------------------------------------------
@@ -273,14 +508,12 @@ impl cosmic::Application for AppModel {
                 self.is_syncing = false;
                 self.status_message = format!("{} folders", self.folders.len());
 
-                // If no folder was selected yet, auto-select INBOX
                 if self.selected_folder.is_none() {
                     if let Some(idx) = self.folders.iter().position(|f| f.path == "INBOX") {
                         self.selected_folder = Some(idx);
                     }
                 }
 
-                // Trigger background message sync for current folder
                 if let Some(idx) = self.selected_folder {
                     if let Some(folder) = self.folders.get(idx) {
                         let mailbox_hash = MailboxHash(folder.mailbox_hash);
@@ -325,7 +558,6 @@ impl cosmic::Application for AppModel {
             // -----------------------------------------------------------------
             Message::SyncMessagesComplete(Ok(())) => {
                 self.is_syncing = false;
-                // Reload page 1 from cache to pick up fresh data
                 if let Some(idx) = self.selected_folder {
                     if let Some(folder) = self.folders.get(idx) {
                         let mailbox_hash = folder.mailbox_hash;
@@ -358,7 +590,6 @@ impl cosmic::Application for AppModel {
                 self.is_syncing = false;
                 self.status_message = format!("{} folders loaded", self.folders.len());
 
-                // Auto-select INBOX if present
                 if let Some(idx) = self.folders.iter().position(|f| f.path == "INBOX") {
                     self.selected_folder = Some(idx);
                     let mailbox_hash = MailboxHash(self.folders[idx].mailbox_hash);
@@ -396,7 +627,6 @@ impl cosmic::Application for AppModel {
                     let folder_name = folder.name.clone();
                     let mut tasks: Vec<Task<Message>> = Vec::new();
 
-                    // 1. Load from cache instantly
                     if let Some(cache) = &self.cache {
                         let cache = cache.clone();
                         tasks.push(cosmic::task::future(async move {
@@ -406,7 +636,6 @@ impl cosmic::Application for AppModel {
                         }));
                     }
 
-                    // 2. Background sync from server
                     if let Some(session) = &self.session {
                         let session = session.clone();
                         let cache = self.cache.clone();
@@ -479,22 +708,18 @@ impl cosmic::Application for AppModel {
                 if let Some(msg) = self.messages.get(index) {
                     let envelope_hash = msg.envelope_hash;
 
-                    // Try cache first
                     if let Some(cache) = &self.cache {
                         let cache = cache.clone();
                         let session = self.session.clone();
                         self.status_message = "Loading message...".into();
                         return cosmic::task::future(async move {
-                            // Check cache
                             match cache.load_body(envelope_hash).await {
                                 Ok(Some(body)) => Message::BodyLoaded(Ok(body)),
                                 _ => {
-                                    // Cache miss — fetch from server
                                     if let Some(session) = session {
                                         let result = session
                                             .fetch_body(EnvelopeHash(envelope_hash))
                                             .await;
-                                        // Cache the result on success
                                         if let Ok(ref body) = result {
                                             if let Err(e) = cache
                                                 .save_body(envelope_hash, body.clone())
@@ -517,7 +742,6 @@ impl cosmic::Application for AppModel {
                         });
                     }
 
-                    // No cache — direct server fetch
                     if let Some(session) = &self.session {
                         let session = session.clone();
                         self.status_message = "Loading message...".into();
