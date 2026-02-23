@@ -1,0 +1,42 @@
+[package]
+name = "nevermail"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A COSMIC desktop email client"
+
+[dependencies]
+# COSMIC UI framework
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", features = [
+    "tokio",
+    "winit",
+    "wgpu",
+] }
+
+# Mail engine
+melib = { version = "0.8", default-features = false, features = ["sqlite3", "imap"] }
+indexmap = { version = "2", features = ["serde"] }
+futures = "0.3"
+
+# SMTP sending (Phase 3)
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+
+# HTML rendering
+html2text = "0.16"
+ammonia = "4"
+
+# Local cache
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# Open URLs in browser
+open = "5"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
