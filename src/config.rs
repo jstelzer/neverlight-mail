@@ -127,7 +127,7 @@ impl Config {
                         Ok(Self::from_file_config(&fc, value.clone()))
                     }
                     PasswordBackend::Keyring => {
-                        match keyring::get_password(&fc.username) {
+                        match keyring::get_password(&fc.username, &fc.server) {
                             Ok(pw) => {
                                 log::info!("Config loaded from file + keyring");
                                 Ok(Self::from_file_config(&fc, pw))

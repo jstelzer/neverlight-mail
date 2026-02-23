@@ -120,4 +120,4 @@ Key types and their locations in melib 0.8.13:
 - **Phase 1**: SQLite cache (store.rs), incremental sync, pagination
 - **Phase 2**: Credential management (keyring or config file)
 - **Phase 3**: SMTP compose/send via lettre
-- **Phase 4**: Search, threading, attachment handling
+- **Phase 4**: Search, threading, attachment handling, multi-account (per-account config/cache, account switcher UI)

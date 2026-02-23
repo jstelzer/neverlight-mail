@@ -23,6 +23,7 @@ pub struct MessageSummary {
     pub thread_id: Option<u64>,
     pub envelope_hash: u64,
     pub timestamp: i64,
+    pub mailbox_hash: u64,
 }
 
 /// Full message body for the preview pane.

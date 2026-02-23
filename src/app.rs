@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cosmic::app::{Core, Task};
@@ -5,12 +6,14 @@ use cosmic::iced::Length;
 use cosmic::widget;
 use cosmic::Element;
 
+use melib::backends::FlagOp;
+use melib::email::Flag;
 use melib::{EnvelopeHash, MailboxHash};
 
 use crate::config::{Config, ConfigNeedsInput, FileConfig, PasswordBackend};
 use crate::core::imap::ImapSession;
 use crate::core::models::{Folder, MessageSummary};
-use crate::core::store::{CacheHandle, DEFAULT_PAGE_SIZE};
+use crate::core::store::{self, CacheHandle, DEFAULT_PAGE_SIZE};
 
 const APP_ID: &str = "com.cosmic_utils.email";
 
@@ -30,6 +33,9 @@ pub struct AppModel {
     has_more_messages: bool,
 
     preview_body: String,
+
+    /// Map folder paths (e.g. "Trash", "Archive") to mailbox hashes
+    folder_map: HashMap<String, u64>,
 
     is_syncing: bool,
     status_message: String,
@@ -64,6 +70,20 @@ pub enum Message {
     SyncFoldersComplete(Result<Vec<Folder>, String>),
     SyncMessagesComplete(Result<(), String>),
     LoadMoreMessages,
+
+    // Flag/move actions
+    ToggleRead(usize),
+    ToggleStar(usize),
+    TrashMessage(usize),
+    ArchiveMessage(usize),
+    FlagOpComplete {
+        envelope_hash: u64,
+        result: Result<u8, String>,
+    },
+    MoveOpComplete {
+        envelope_hash: u64,
+        result: Result<(), String>,
+    },
 
     OpenLink(String),
     Refresh,
@@ -120,6 +140,7 @@ impl cosmic::Application for AppModel {
             messages_offset: 0,
             has_more_messages: false,
             preview_body: String::new(),
+            folder_map: HashMap::new(),
             is_syncing: false,
             status_message: "Starting up...".into(),
 
@@ -251,7 +272,10 @@ impl cosmic::Application for AppModel {
             self.selected_message,
             self.has_more_messages,
         );
-        let message_view = crate::ui::message_view::view(&self.preview_body);
+        let selected_msg = self.selected_message.and_then(|i| {
+            self.messages.get(i).map(|msg| (i, msg))
+        });
+        let message_view = crate::ui::message_view::view(&self.preview_body, selected_msg);
 
         let main_content = widget::row()
             .push(
@@ -333,7 +357,7 @@ impl cosmic::Application for AppModel {
 
                 // Try keyring first; fall back to plaintext on failure
                 let password_backend =
-                    match crate::core::keyring::set_password(&username, &password) {
+                    match crate::core::keyring::set_password(&username, &server, &password) {
                         Ok(()) => {
                             log::info!("Password stored in keyring");
                             PasswordBackend::Keyring
@@ -400,6 +424,7 @@ impl cosmic::Application for AppModel {
             Message::CachedFoldersLoaded(Ok(folders)) => {
                 if !folders.is_empty() {
                     self.folders = folders;
+                    self.rebuild_folder_map();
                     self.status_message =
                         format!("{} folders (cached)", self.folders.len());
 
@@ -505,6 +530,7 @@ impl cosmic::Application for AppModel {
             // -----------------------------------------------------------------
             Message::SyncFoldersComplete(Ok(folders)) => {
                 self.folders = folders;
+                self.rebuild_folder_map();
                 self.is_syncing = false;
                 self.status_message = format!("{} folders", self.folders.len());
 
@@ -587,6 +613,7 @@ impl cosmic::Application for AppModel {
             // -----------------------------------------------------------------
             Message::FoldersLoaded(Ok(folders)) => {
                 self.folders = folders;
+                self.rebuild_folder_map();
                 self.is_syncing = false;
                 self.status_message = format!("{} folders loaded", self.folders.len());
 
@@ -764,6 +791,287 @@ impl cosmic::Application for AppModel {
                 log::error!("Body fetch failed: {}", e);
             }
 
+            // -----------------------------------------------------------------
+            // Flag actions — optimistic UI + background IMAP op
+            // -----------------------------------------------------------------
+            Message::ToggleRead(index) => {
+                if let Some(msg) = self.messages.get_mut(index) {
+                    let new_read = !msg.is_read;
+                    msg.is_read = new_read;
+                    let envelope_hash = msg.envelope_hash;
+                    let mailbox_hash = msg.mailbox_hash;
+                    let new_flags = store::flags_to_u8(new_read, msg.is_starred);
+                    let pending_op = if new_read { "set_seen" } else { "unset_seen" }.to_string();
+
+                    let mut tasks: Vec<Task<Message>> = Vec::new();
+
+                    if let Some(cache) = &self.cache {
+                        let cache = cache.clone();
+                        let op = pending_op.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            if let Err(e) = cache.update_flags(envelope_hash, new_flags, op).await {
+                                log::warn!("Failed to update cache flags: {}", e);
+                            }
+                            Message::Noop
+                        }));
+                    }
+
+                    if let Some(session) = &self.session {
+                        let session = session.clone();
+                        let flag_op = if new_read {
+                            FlagOp::Set(Flag::SEEN)
+                        } else {
+                            FlagOp::UnSet(Flag::SEEN)
+                        };
+                        tasks.push(cosmic::task::future(async move {
+                            let result = session
+                                .set_flags(
+                                    EnvelopeHash(envelope_hash),
+                                    MailboxHash(mailbox_hash),
+                                    vec![flag_op],
+                                )
+                                .await;
+                            Message::FlagOpComplete {
+                                envelope_hash,
+                                result: result.map(|_| new_flags),
+                            }
+                        }));
+                    }
+
+                    if !tasks.is_empty() {
+                        return cosmic::task::batch(tasks);
+                    }
+                }
+            }
+
+            Message::ToggleStar(index) => {
+                if let Some(msg) = self.messages.get_mut(index) {
+                    let new_starred = !msg.is_starred;
+                    msg.is_starred = new_starred;
+                    let envelope_hash = msg.envelope_hash;
+                    let mailbox_hash = msg.mailbox_hash;
+                    let new_flags = store::flags_to_u8(msg.is_read, new_starred);
+                    let pending_op = if new_starred { "set_flagged" } else { "unset_flagged" }.to_string();
+
+                    let mut tasks: Vec<Task<Message>> = Vec::new();
+
+                    if let Some(cache) = &self.cache {
+                        let cache = cache.clone();
+                        let op = pending_op.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            if let Err(e) = cache.update_flags(envelope_hash, new_flags, op).await {
+                                log::warn!("Failed to update cache flags: {}", e);
+                            }
+                            Message::Noop
+                        }));
+                    }
+
+                    if let Some(session) = &self.session {
+                        let session = session.clone();
+                        let flag_op = if new_starred {
+                            FlagOp::Set(Flag::FLAGGED)
+                        } else {
+                            FlagOp::UnSet(Flag::FLAGGED)
+                        };
+                        tasks.push(cosmic::task::future(async move {
+                            let result = session
+                                .set_flags(
+                                    EnvelopeHash(envelope_hash),
+                                    MailboxHash(mailbox_hash),
+                                    vec![flag_op],
+                                )
+                                .await;
+                            Message::FlagOpComplete {
+                                envelope_hash,
+                                result: result.map(|_| new_flags),
+                            }
+                        }));
+                    }
+
+                    if !tasks.is_empty() {
+                        return cosmic::task::batch(tasks);
+                    }
+                }
+            }
+
+            Message::TrashMessage(index) => {
+                if let Some(trash_hash) = self.folder_map.get("Trash").or_else(|| self.folder_map.get("INBOX.Trash")).copied() {
+                    if let Some(msg) = self.messages.get(index) {
+                        let envelope_hash = msg.envelope_hash;
+                        let source_mailbox = msg.mailbox_hash;
+
+                        // Optimistic: remove from list
+                        self.messages.remove(index);
+                        if let Some(sel) = &mut self.selected_message {
+                            if *sel >= self.messages.len() && !self.messages.is_empty() {
+                                *sel = self.messages.len() - 1;
+                            } else if self.messages.is_empty() {
+                                self.selected_message = None;
+                                self.preview_body.clear();
+                            }
+                        }
+
+                        let mut tasks: Vec<Task<Message>> = Vec::new();
+
+                        if let Some(cache) = &self.cache {
+                            let cache = cache.clone();
+                            let new_flags = store::flags_to_u8(true, false);
+                            tasks.push(cosmic::task::future(async move {
+                                if let Err(e) = cache.update_flags(envelope_hash, new_flags, format!("move:{}", trash_hash)).await {
+                                    log::warn!("Failed to update cache for trash: {}", e);
+                                }
+                                Message::Noop
+                            }));
+                        }
+
+                        if let Some(session) = &self.session {
+                            let session = session.clone();
+                            tasks.push(cosmic::task::future(async move {
+                                let result = session
+                                    .move_messages(
+                                        EnvelopeHash(envelope_hash),
+                                        MailboxHash(source_mailbox),
+                                        MailboxHash(trash_hash),
+                                    )
+                                    .await;
+                                Message::MoveOpComplete {
+                                    envelope_hash,
+                                    result,
+                                }
+                            }));
+                        }
+
+                        if !tasks.is_empty() {
+                            return cosmic::task::batch(tasks);
+                        }
+                    }
+                } else {
+                    self.status_message = "Trash folder not found".into();
+                }
+            }
+
+            Message::ArchiveMessage(index) => {
+                if let Some(archive_hash) = self.folder_map.get("Archive").or_else(|| self.folder_map.get("INBOX.Archive")).copied() {
+                    if let Some(msg) = self.messages.get(index) {
+                        let envelope_hash = msg.envelope_hash;
+                        let source_mailbox = msg.mailbox_hash;
+
+                        // Optimistic: remove from list
+                        self.messages.remove(index);
+                        if let Some(sel) = &mut self.selected_message {
+                            if *sel >= self.messages.len() && !self.messages.is_empty() {
+                                *sel = self.messages.len() - 1;
+                            } else if self.messages.is_empty() {
+                                self.selected_message = None;
+                                self.preview_body.clear();
+                            }
+                        }
+
+                        let mut tasks: Vec<Task<Message>> = Vec::new();
+
+                        if let Some(cache) = &self.cache {
+                            let cache = cache.clone();
+                            let new_flags = store::flags_to_u8(true, false);
+                            tasks.push(cosmic::task::future(async move {
+                                if let Err(e) = cache.update_flags(envelope_hash, new_flags, format!("move:{}", archive_hash)).await {
+                                    log::warn!("Failed to update cache for archive: {}", e);
+                                }
+                                Message::Noop
+                            }));
+                        }
+
+                        if let Some(session) = &self.session {
+                            let session = session.clone();
+                            tasks.push(cosmic::task::future(async move {
+                                let result = session
+                                    .move_messages(
+                                        EnvelopeHash(envelope_hash),
+                                        MailboxHash(source_mailbox),
+                                        MailboxHash(archive_hash),
+                                    )
+                                    .await;
+                                Message::MoveOpComplete {
+                                    envelope_hash,
+                                    result,
+                                }
+                            }));
+                        }
+
+                        if !tasks.is_empty() {
+                            return cosmic::task::batch(tasks);
+                        }
+                    }
+                } else {
+                    self.status_message = "Archive folder not found".into();
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // Background flag/move op results
+            // -----------------------------------------------------------------
+            Message::FlagOpComplete {
+                envelope_hash,
+                result,
+            } => {
+                match result {
+                    Ok(new_flags) => {
+                        if let Some(cache) = &self.cache {
+                            let cache = cache.clone();
+                            return cosmic::task::future(async move {
+                                if let Err(e) = cache.clear_pending_op(envelope_hash, new_flags).await {
+                                    log::warn!("Failed to clear pending op: {}", e);
+                                }
+                                Message::Noop
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Flag operation failed: {}", e);
+                        self.status_message = format!("Flag update failed: {}", e);
+
+                        // Revert optimistic UI
+                        if let Some(msg) = self.messages.iter_mut().find(|m| m.envelope_hash == envelope_hash) {
+                            msg.is_read = !msg.is_read; // toggle back
+                        }
+
+                        if let Some(cache) = &self.cache {
+                            let cache = cache.clone();
+                            return cosmic::task::future(async move {
+                                if let Err(e) = cache.revert_pending_op(envelope_hash).await {
+                                    log::warn!("Failed to revert pending op: {}", e);
+                                }
+                                Message::Noop
+                            });
+                        }
+                    }
+                }
+            }
+
+            Message::MoveOpComplete {
+                envelope_hash,
+                result,
+            } => {
+                match result {
+                    Ok(()) => {
+                        if let Some(cache) = &self.cache {
+                            let cache = cache.clone();
+                            return cosmic::task::future(async move {
+                                if let Err(e) = cache.remove_message(envelope_hash).await {
+                                    log::warn!("Failed to remove message from cache: {}", e);
+                                }
+                                Message::Noop
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Move operation failed: {}", e);
+                        self.status_message = format!("Move failed: {}", e);
+                        // TODO: re-insert message on failure (would need to store removed msg)
+                        // For now, a refresh will restore correct state
+                    }
+                }
+            }
+
             Message::OpenLink(url) => {
                 crate::core::mime::open_link(&url);
             }
@@ -793,5 +1101,13 @@ impl cosmic::Application for AppModel {
 impl AppModel {
     fn set_window_title(&self, title: String) -> cosmic::app::Task<Message> {
         self.core.set_title(self.core.main_window_id(), title)
+    }
+
+    /// Rebuild folder_map from current folders list.
+    fn rebuild_folder_map(&mut self) {
+        self.folder_map.clear();
+        for f in &self.folders {
+            self.folder_map.insert(f.path.clone(), f.mailbox_hash);
+        }
     }
 }

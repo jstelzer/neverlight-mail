@@ -36,6 +36,48 @@ CREATE INDEX IF NOT EXISTS idx_messages_mailbox
     ON messages(mailbox_hash, timestamp DESC);
 ";
 
+/// Run forward-only migrations. Each ALTER is idempotent (ignores "duplicate column" errors).
+fn run_migrations(conn: &Connection) {
+    let alters = [
+        "ALTER TABLE messages ADD COLUMN flags_server INTEGER DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN flags_local INTEGER DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN pending_op TEXT",
+    ];
+    for sql in &alters {
+        // "duplicate column name" is the expected error when already migrated
+        if let Err(e) = conn.execute(sql, []) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                log::warn!("Migration failed ({}): {}", sql, msg);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flag helpers — encode melib::Flag bitfield as u8
+// ---------------------------------------------------------------------------
+
+/// melib::Flag::SEEN  = 0b0000_0001
+/// melib::Flag::FLAGGED = 0b0100_0000  (but we store our own compact encoding)
+/// We use a simple two-bit encoding for the flags we care about:
+///   bit 0 = SEEN
+///   bit 1 = FLAGGED
+pub fn flags_to_u8(is_read: bool, is_starred: bool) -> u8 {
+    let mut f: u8 = 0;
+    if is_read {
+        f |= 1;
+    }
+    if is_starred {
+        f |= 2;
+    }
+    f
+}
+
+pub fn flags_from_u8(f: u8) -> (bool, bool) {
+    (f & 1 != 0, f & 2 != 0)
+}
+
 // ---------------------------------------------------------------------------
 // Commands sent from async world → background thread
 // ---------------------------------------------------------------------------
@@ -72,6 +114,26 @@ enum CacheCmd {
         body: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    // Phase 2b: dual-truth flag ops
+    UpdateFlags {
+        envelope_hash: u64,
+        flags_local: u8,
+        pending_op: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    ClearPendingOp {
+        envelope_hash: u64,
+        flags_server: u8,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    RevertPendingOp {
+        envelope_hash: u64,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    RemoveMessage {
+        envelope_hash: u64,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +158,8 @@ impl CacheHandle {
 
         conn.execute_batch(SCHEMA)
             .map_err(|e| format!("Failed to init cache schema: {e}"))?;
+
+        run_migrations(&conn);
 
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -198,6 +262,66 @@ impl CacheHandle {
         rx.await.map_err(|_| "Cache unavailable".to_string())?
     }
 
+    /// Set local flags and mark a pending operation.
+    pub async fn update_flags(
+        &self,
+        envelope_hash: u64,
+        flags_local: u8,
+        pending_op: String,
+    ) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CacheCmd::UpdateFlags {
+                envelope_hash,
+                flags_local,
+                pending_op,
+                reply,
+            })
+            .map_err(|_| "Cache unavailable".to_string())?;
+        rx.await.map_err(|_| "Cache unavailable".to_string())?
+    }
+
+    /// IMAP op succeeded — update server flags and clear pending.
+    pub async fn clear_pending_op(
+        &self,
+        envelope_hash: u64,
+        flags_server: u8,
+    ) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CacheCmd::ClearPendingOp {
+                envelope_hash,
+                flags_server,
+                reply,
+            })
+            .map_err(|_| "Cache unavailable".to_string())?;
+        rx.await.map_err(|_| "Cache unavailable".to_string())?
+    }
+
+    /// IMAP op failed — revert local flags to server flags, clear pending.
+    pub async fn revert_pending_op(&self, envelope_hash: u64) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CacheCmd::RevertPendingOp {
+                envelope_hash,
+                reply,
+            })
+            .map_err(|_| "Cache unavailable".to_string())?;
+        rx.await.map_err(|_| "Cache unavailable".to_string())?
+    }
+
+    /// Remove a message from the cache (after successful move).
+    pub async fn remove_message(&self, envelope_hash: u64) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CacheCmd::RemoveMessage {
+                envelope_hash,
+                reply,
+            })
+            .map_err(|_| "Cache unavailable".to_string())?;
+        rx.await.map_err(|_| "Cache unavailable".to_string())?
+    }
+
     // -- background thread ---------------------------------------------------
 
     fn run_loop(conn: Connection, mut rx: mpsc::UnboundedReceiver<CacheCmd>) {
@@ -243,6 +367,39 @@ impl CacheHandle {
                     reply,
                 } => {
                     let _ = reply.send(Self::do_save_body(&conn, envelope_hash, &body));
+                }
+                CacheCmd::UpdateFlags {
+                    envelope_hash,
+                    flags_local,
+                    pending_op,
+                    reply,
+                } => {
+                    let _ = reply.send(Self::do_update_flags(
+                        &conn,
+                        envelope_hash,
+                        flags_local,
+                        &pending_op,
+                    ));
+                }
+                CacheCmd::ClearPendingOp {
+                    envelope_hash,
+                    flags_server,
+                    reply,
+                } => {
+                    let _ =
+                        reply.send(Self::do_clear_pending_op(&conn, envelope_hash, flags_server));
+                }
+                CacheCmd::RevertPendingOp {
+                    envelope_hash,
+                    reply,
+                } => {
+                    let _ = reply.send(Self::do_revert_pending_op(&conn, envelope_hash));
+                }
+                CacheCmd::RemoveMessage {
+                    envelope_hash,
+                    reply,
+                } => {
+                    let _ = reply.send(Self::do_remove_message(&conn, envelope_hash));
                 }
             }
         }
@@ -328,36 +485,88 @@ impl CacheHandle {
             .unchecked_transaction()
             .map_err(|e| format!("Cache tx error: {e}"))?;
 
-        // Write-through: replace all messages for this mailbox
+        // Collect envelope hashes that have pending ops — we must not overwrite those
+        let mut pending_set = std::collections::HashSet::new();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT envelope_hash FROM messages
+                     WHERE mailbox_hash = ?1 AND pending_op IS NOT NULL",
+                )
+                .map_err(|e| format!("Cache prepare error: {e}"))?;
+            let rows = stmt
+                .query_map([mailbox_hash as i64], |row| row.get::<_, i64>(0))
+                .map_err(|e| format!("Cache query error: {e}"))?;
+            for row in rows {
+                if let Ok(hash) = row {
+                    pending_set.insert(hash as u64);
+                }
+            }
+        }
+
+        // Delete non-pending messages for this mailbox
         tx.execute(
-            "DELETE FROM messages WHERE mailbox_hash = ?1",
+            "DELETE FROM messages WHERE mailbox_hash = ?1 AND pending_op IS NULL",
             [mailbox_hash as i64],
         )
         .map_err(|e| format!("Cache delete error: {e}"))?;
 
         let mut stmt = tx
             .prepare(
-                "INSERT INTO messages (envelope_hash, mailbox_hash, subject, sender, date, timestamp, is_read, is_starred, has_attachments, thread_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT OR IGNORE INTO messages
+                 (envelope_hash, mailbox_hash, subject, sender, date, timestamp,
+                  is_read, is_starred, has_attachments, thread_id, flags_server, flags_local)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )
+            .map_err(|e| format!("Cache prepare error: {e}"))?;
+
+        // For messages with pending ops, update only flags_server (not flags_local or pending_op)
+        let mut update_server_stmt = tx
+            .prepare(
+                "UPDATE messages SET flags_server = ?1, subject = ?2, sender = ?3,
+                 date = ?4, timestamp = ?5, has_attachments = ?6, thread_id = ?7
+                 WHERE envelope_hash = ?8 AND pending_op IS NOT NULL",
             )
             .map_err(|e| format!("Cache prepare error: {e}"))?;
 
         for m in messages {
-            stmt.execute(rusqlite::params![
-                m.envelope_hash as i64,
-                mailbox_hash as i64,
-                m.subject,
-                m.from,
-                m.date,
-                m.timestamp,
-                m.is_read as i32,
-                m.is_starred as i32,
-                m.has_attachments as i32,
-                m.thread_id.map(|t| t as i64),
-            ])
-            .map_err(|e| format!("Cache insert error: {e}"))?;
+            let server_flags = flags_to_u8(m.is_read, m.is_starred);
+
+            if pending_set.contains(&m.envelope_hash) {
+                // Update server-side data but preserve local overrides
+                update_server_stmt
+                    .execute(rusqlite::params![
+                        server_flags as i32,
+                        m.subject,
+                        m.from,
+                        m.date,
+                        m.timestamp,
+                        m.has_attachments as i32,
+                        m.thread_id.map(|t| t as i64),
+                        m.envelope_hash as i64,
+                    ])
+                    .map_err(|e| format!("Cache update error: {e}"))?;
+            } else {
+                // Fresh insert — server and local flags agree
+                stmt.execute(rusqlite::params![
+                    m.envelope_hash as i64,
+                    mailbox_hash as i64,
+                    m.subject,
+                    m.from,
+                    m.date,
+                    m.timestamp,
+                    m.is_read as i32,
+                    m.is_starred as i32,
+                    m.has_attachments as i32,
+                    m.thread_id.map(|t| t as i64),
+                    server_flags as i32,
+                    server_flags as i32, // local = server when no pending op
+                ])
+                .map_err(|e| format!("Cache insert error: {e}"))?;
+            }
         }
         drop(stmt);
+        drop(update_server_stmt);
 
         tx.commit()
             .map_err(|e| format!("Cache commit error: {e}"))?;
@@ -372,7 +581,9 @@ impl CacheHandle {
     ) -> Result<Vec<MessageSummary>, String> {
         let mut stmt = conn
             .prepare(
-                "SELECT envelope_hash, subject, sender, date, timestamp, is_read, is_starred, has_attachments, thread_id
+                "SELECT envelope_hash, subject, sender, date, timestamp,
+                        is_read, is_starred, has_attachments, thread_id,
+                        flags_server, flags_local, pending_op, mailbox_hash
                  FROM messages
                  WHERE mailbox_hash = ?1
                  ORDER BY timestamp DESC
@@ -386,17 +597,31 @@ impl CacheHandle {
                 |row| {
                     let envelope_hash: i64 = row.get(0)?;
                     let thread_id: Option<i64> = row.get(8)?;
+                    let flags_server: i32 = row.get::<_, Option<i32>>(9)?.unwrap_or(0);
+                    let flags_local: i32 = row.get::<_, Option<i32>>(10)?.unwrap_or(0);
+                    let pending_op: Option<String> = row.get(11)?;
+                    let mbox_hash: i64 = row.get(12)?;
+
+                    // Dual-truth: if pending_op is set, use flags_local; otherwise flags_server
+                    let effective_flags = if pending_op.is_some() {
+                        flags_local as u8
+                    } else {
+                        flags_server as u8
+                    };
+                    let (is_read, is_starred) = flags_from_u8(effective_flags);
+
                     Ok(MessageSummary {
                         uid: envelope_hash as u64,
                         subject: row.get(1)?,
                         from: row.get(2)?,
                         date: row.get(3)?,
                         timestamp: row.get(4)?,
-                        is_read: row.get::<_, i32>(5)? != 0,
-                        is_starred: row.get::<_, i32>(6)? != 0,
+                        is_read,
+                        is_starred,
                         has_attachments: row.get::<_, i32>(7)? != 0,
                         thread_id: thread_id.map(|t| t as u64),
                         envelope_hash: envelope_hash as u64,
+                        mailbox_hash: mbox_hash as u64,
                     })
                 },
             )
@@ -438,6 +663,73 @@ impl CacheHandle {
             rusqlite::params![body, envelope_hash as i64],
         )
         .map_err(|e| format!("Cache body save error: {e}"))?;
+        Ok(())
+    }
+
+    // -- Phase 2b: dual-truth flag operations --------------------------------
+
+    fn do_update_flags(
+        conn: &Connection,
+        envelope_hash: u64,
+        flags_local: u8,
+        pending_op: &str,
+    ) -> Result<(), String> {
+        let (is_read, is_starred) = flags_from_u8(flags_local);
+        conn.execute(
+            "UPDATE messages SET flags_local = ?1, pending_op = ?2, is_read = ?3, is_starred = ?4
+             WHERE envelope_hash = ?5",
+            rusqlite::params![
+                flags_local as i32,
+                pending_op,
+                is_read as i32,
+                is_starred as i32,
+                envelope_hash as i64,
+            ],
+        )
+        .map_err(|e| format!("Cache update_flags error: {e}"))?;
+        Ok(())
+    }
+
+    fn do_clear_pending_op(
+        conn: &Connection,
+        envelope_hash: u64,
+        flags_server: u8,
+    ) -> Result<(), String> {
+        let (is_read, is_starred) = flags_from_u8(flags_server);
+        conn.execute(
+            "UPDATE messages SET flags_server = ?1, flags_local = ?1, pending_op = NULL,
+             is_read = ?2, is_starred = ?3
+             WHERE envelope_hash = ?4",
+            rusqlite::params![
+                flags_server as i32,
+                is_read as i32,
+                is_starred as i32,
+                envelope_hash as i64,
+            ],
+        )
+        .map_err(|e| format!("Cache clear_pending error: {e}"))?;
+        Ok(())
+    }
+
+    fn do_revert_pending_op(conn: &Connection, envelope_hash: u64) -> Result<(), String> {
+        // Revert local flags to match server flags, clear pending
+        conn.execute(
+            "UPDATE messages SET flags_local = flags_server, pending_op = NULL,
+             is_read = CASE WHEN (flags_server & 1) != 0 THEN 1 ELSE 0 END,
+             is_starred = CASE WHEN (flags_server & 2) != 0 THEN 1 ELSE 0 END
+             WHERE envelope_hash = ?1",
+            [envelope_hash as i64],
+        )
+        .map_err(|e| format!("Cache revert_pending error: {e}"))?;
+        Ok(())
+    }
+
+    fn do_remove_message(conn: &Connection, envelope_hash: u64) -> Result<(), String> {
+        conn.execute(
+            "DELETE FROM messages WHERE envelope_hash = ?1",
+            [envelope_hash as i64],
+        )
+        .map_err(|e| format!("Cache remove_message error: {e}"))?;
         Ok(())
     }
 }

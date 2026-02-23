@@ -5,7 +5,7 @@ use futures::StreamExt;
 use indexmap::IndexMap;
 use tokio::sync::Mutex;
 
-use melib::backends::{BackendEventConsumer, IsSubscribedFn, MailBackend};
+use melib::backends::{BackendEventConsumer, EnvelopeHashBatch, FlagOp, IsSubscribedFn, MailBackend};
 use melib::conf::AccountSettings;
 use melib::email::attachment_types::{ContentType, Text};
 use melib::imap::ImapType;
@@ -173,6 +173,7 @@ impl ImapSession {
                     thread_id: None,
                     envelope_hash: envelope.hash().0,
                     timestamp: envelope.timestamp as i64,
+                    mailbox_hash: mailbox_hash.0,
                 });
             }
         }
@@ -181,6 +182,55 @@ impl ImapSession {
         messages.reverse();
 
         Ok(messages)
+    }
+
+    /// Set or unset flags on a single message.
+    pub async fn set_flags(
+        self: &Arc<Self>,
+        envelope_hash: EnvelopeHash,
+        mailbox_hash: MailboxHash,
+        flags: Vec<FlagOp>,
+    ) -> Result<(), String> {
+        let future = {
+            let mut backend = self.backend.lock().await;
+            backend
+                .set_flags(
+                    EnvelopeHashBatch::from(envelope_hash),
+                    mailbox_hash,
+                    flags,
+                )
+                .map_err(|e| format!("Failed to request set_flags: {}", e))?
+        };
+
+        future
+            .await
+            .map_err(|e| format!("Failed to set flags: {}", e))?;
+        Ok(())
+    }
+
+    /// Move a message from one mailbox to another.
+    pub async fn move_messages(
+        self: &Arc<Self>,
+        envelope_hash: EnvelopeHash,
+        source_mailbox_hash: MailboxHash,
+        destination_mailbox_hash: MailboxHash,
+    ) -> Result<(), String> {
+        let future = {
+            let mut backend = self.backend.lock().await;
+            backend
+                .copy_messages(
+                    EnvelopeHashBatch::from(envelope_hash),
+                    source_mailbox_hash,
+                    destination_mailbox_hash,
+                    true, // move = true
+                )
+                .map_err(|e| format!("Failed to request move: {}", e))?
+        };
+
+        future
+            .await
+            .map_err(|e| format!("Failed to move message: {}", e))?;
+        Ok(())
     }
 
     /// Fetch and render the body of a single message.

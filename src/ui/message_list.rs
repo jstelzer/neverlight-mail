@@ -19,7 +19,10 @@ pub fn view<'a>(
         for (i, msg) in messages.iter().enumerate() {
             let _is_selected = selected == Some(i);
 
-            let subject = widget::text::body(&msg.subject);
+            let star = if msg.is_starred { "★ " } else { "" };
+            let unread = if !msg.is_read { "● " } else { "" };
+            let subject_text = format!("{}{}{}", unread, star, msg.subject);
+            let subject = widget::text::body(subject_text);
             let meta = widget::text::caption(format!("{} — {}", msg.from, msg.date));
 
             let row_content = widget::column().push(subject).push(meta).spacing(2);

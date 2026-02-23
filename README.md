@@ -54,7 +54,7 @@ Data flows: IMAP (via melib) → domain models → SQLite cache → COSMIC widge
 - [x] **Phase 0**: Connect to IMAP, list folders, display message headers
 - [x] **Phase 1**: SQLite cache, incremental sync, pagination, body preview
 - [x] **Phase 2a**: Credential management (config file + OS keyring + setup dialog)
-- [ ] **Phase 2b**: Flags + actions (seen/star toggles, archive, delete, move)
+- [x] **Phase 2b**: Flags + actions (seen/star toggles, archive, delete, move)
 - [ ] **Phase 2c**: Threading (compute from headers, store in cache, render with indentation)
 - [ ] **Phase 2d**: Keyboard shortcuts (j/k navigation, action keys, thread collapse)
 - [ ] **Phase 3**: Compose + send (SMTP via lettre)
