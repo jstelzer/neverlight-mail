@@ -20,18 +20,47 @@ fn html_to_text(html: &str) -> String {
     html2text::from_read(html.as_bytes(), 80).unwrap_or_default()
 }
 
+/// Max HTML input size before truncation (512 KB).
+const MAX_HTML_BYTES: usize = 512 * 1024;
+/// Max markdown output length in chars.
+const MAX_MD_CHARS: usize = 200_000;
+
 /// Render email body as Markdown for the preview widget.
-/// Pipeline: HTML → ammonia (strip layout junk) → html2md convert.
-/// Prefers HTML when available (produces richer output than plain text).
+///
+/// Prefers text/plain when it looks like real content — most emails include both
+/// parts and the plain version is usually fine. Falls back to the
+/// HTML → ammonia → html2md pipeline when plain text is missing or looks like
+/// a tracking stub.
 pub fn render_body_markdown(text_plain: Option<&str>, text_html: Option<&str>) -> String {
-    if let Some(html) = text_html {
-        let clean = clean_email_html(html);
-        return html2md::parse_html(&clean);
+    // Prefer plain text when it looks like real content
+    if let Some(plain) = text_plain {
+        if !plain_is_junk(plain) {
+            return plain.to_string();
+        }
     }
+
+    // Fall back to sanitized HTML → markdown
+    if let Some(html) = text_html {
+        let html = &html[..html.len().min(MAX_HTML_BYTES)];
+        let clean = clean_email_html(html);
+        let mut md = html2md::parse_html(&clean);
+        md.truncate(MAX_MD_CHARS);
+        return md;
+    }
+
+    // Plain was junk but there's no HTML — show it anyway
     if let Some(plain) = text_plain {
         return plain.to_string();
     }
+
     "[No displayable content]".to_string()
+}
+
+/// Returns true if the plain-text part looks like a stub or tracking junk
+/// rather than real email content.
+fn plain_is_junk(s: &str) -> bool {
+    let t = s.trim();
+    t.is_empty() || t.len() < 40 || t.lines().count() <= 2
 }
 
 /// Strip email HTML down to semantic content only.
