@@ -2,6 +2,7 @@
 
 A COSMIC desktop email client for Linux, built in Rust.
 
+So thi
 **Status:** Early alpha — connects, caches, browses. Read-only.
 
 ## Stack
@@ -64,6 +65,7 @@ Data flows: IMAP (via melib) → domain models → SQLite cache → COSMIC widge
 - [ ] **Phase 7**: Figure out html rendering and consider adding https://github.com/Mrmayman/frostmark
 - [ ] **Phase 8**: Allow smtp creds to be distinct from imap
 - [ ] **Phase 9**: Search, OAuth2, multiple accounts
+- [ ] **Phase 10**: Drag & Drop
 
 
 ### Phase 2b–d design notes
@@ -76,10 +78,8 @@ Data flows: IMAP (via melib) → domain models → SQLite cache → COSMIC widge
 
 ## Not yet supported
 
-- Compose / send (SMTP dep exists, not wired)
 - OAuth2 (password-only auth for now)
 - Multiple accounts
-- Attachment download / save
 - Full-text search
 - Real HTML rendering (text-only via html2text)
 
