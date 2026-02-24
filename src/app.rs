@@ -418,6 +418,20 @@ impl cosmic::Application for AppModel {
                 Subscription::run_with_id("imap-watch", imap_watch_stream(session))
                     .map(Message::ImapEvent),
             );
+
+            // Periodic full sync to catch changes IDLE misses (e.g. remote deletions)
+            subs.push(Subscription::run_with_id(
+                "periodic-sync",
+                cosmic::iced_futures::stream::channel(1, |mut output| async move {
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+                    interval.tick().await; // skip immediate first tick
+                    loop {
+                        interval.tick().await;
+                        let _ = output.send(Message::Refresh).await;
+                    }
+                }),
+            ));
         }
 
         Subscription::batch(subs)
