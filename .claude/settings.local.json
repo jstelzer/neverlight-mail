@@ -17,7 +17,8 @@
       "Bash(grep:*)",
       "Bash(clorinde schema:*)",
       "WebFetch(domain:api.github.com)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)"
     ]
   }
 }

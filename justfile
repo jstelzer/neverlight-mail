@@ -9,6 +9,7 @@ release:
 build:
     cargo clippy --bin "nevermail" -p nevermail
     cargo build
+    cargo test
 
 reset:
     rm ~/.local/share/nevermail/*.db
