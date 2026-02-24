@@ -12,6 +12,7 @@ pub enum ComposeMode {
     Forward,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     mode: &ComposeMode,
     from_addresses: &'a [String],

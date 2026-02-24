@@ -92,7 +92,7 @@ pub enum Message {
 
     SelectFolder(usize),
 
-    SelectMessage(usize),
+    ViewBody(usize),
     BodyLoaded(Result<(String, String, Vec<AttachmentData>), String>),
     LinkClicked(markdown::Url),
     CopyBody,
@@ -110,8 +110,8 @@ pub enum Message {
     // Flag/move actions
     ToggleRead(usize),
     ToggleStar(usize),
-    TrashMessage(usize),
-    ArchiveMessage(usize),
+    Trash(usize),
+    Archive(usize),
     FlagOpComplete {
         envelope_hash: u64,
         result: Result<u8, String>,
@@ -341,12 +341,10 @@ impl cosmic::Application for AppModel {
                     return None;
                 }
                 match event {
-                    Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
-                        keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                            Some(Message::SearchClear)
-                        }
-                        _ => None,
-                    },
+                    Event::Keyboard(keyboard::Event::KeyPressed {
+                        key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                        ..
+                    }) => Some(Message::SearchClear),
                     _ => None,
                 }
             }));
@@ -1061,7 +1059,7 @@ impl cosmic::Application for AppModel {
             // -----------------------------------------------------------------
             // Select message — cache-first body loading
             // -----------------------------------------------------------------
-            Message::SelectMessage(index) => {
+            Message::ViewBody(index) => {
                 self.selected_message = Some(index);
 
                 if let Some(msg) = self.messages.get(index) {
@@ -1305,7 +1303,7 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::TrashMessage(index) => {
+            Message::Trash(index) => {
                 if let Some(trash_hash) = self.folder_map.get("Trash").or_else(|| self.folder_map.get("INBOX.Trash")).copied() {
                     if let Some(msg) = self.messages.get(index) {
                         let envelope_hash = msg.envelope_hash;
@@ -1365,7 +1363,7 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::ArchiveMessage(index) => {
+            Message::Archive(index) => {
                 if let Some(archive_hash) = self.folder_map.get("Archive").or_else(|| self.folder_map.get("INBOX.Archive")).copied() {
                     if let Some(msg) = self.messages.get(index) {
                         let envelope_hash = msg.envelope_hash;
@@ -1507,7 +1505,7 @@ impl cosmic::Application for AppModel {
                 };
                 if let Some(&real_index) = self.visible_indices.get(new_vis_pos) {
                     self.selected_message = Some(real_index);
-                    return self.update(Message::SelectMessage(real_index));
+                    return self.update(Message::ViewBody(real_index));
                 }
             }
 
@@ -1524,13 +1522,13 @@ impl cosmic::Application for AppModel {
                 };
                 if let Some(&real_index) = self.visible_indices.get(new_vis_pos) {
                     self.selected_message = Some(real_index);
-                    return self.update(Message::SelectMessage(real_index));
+                    return self.update(Message::ViewBody(real_index));
                 }
             }
 
             Message::ActivateSelection => {
                 if let Some(index) = self.selected_message {
-                    return self.update(Message::SelectMessage(index));
+                    return self.update(Message::ViewBody(index));
                 }
             }
 
@@ -1669,7 +1667,7 @@ impl cosmic::Application for AppModel {
             }) => {
                 // Only act if we're viewing the affected mailbox
                 let viewing_mailbox = self.selected_folder.and_then(|i| self.folders.get(i))
-                    .map_or(false, |f| f.mailbox_hash == mailbox_hash);
+                    .is_some_and(|f| f.mailbox_hash == mailbox_hash);
 
                 if viewing_mailbox {
                     // Find and remove from messages list
@@ -1718,7 +1716,7 @@ impl cosmic::Application for AppModel {
                 flags,
             }) => {
                 let viewing_mailbox = self.selected_folder.and_then(|i| self.folders.get(i))
-                    .map_or(false, |f| f.mailbox_hash == mailbox_hash);
+                    .is_some_and(|f| f.mailbox_hash == mailbox_hash);
 
                 if viewing_mailbox {
                     let (is_read, is_starred) = store::flags_from_u8(flags);

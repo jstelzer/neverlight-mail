@@ -12,6 +12,7 @@ pub fn search_input_id() -> widget::Id {
 }
 
 /// Render the message list for the selected folder.
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     messages: &'a [MessageSummary],
     visible_indices: &[usize],
@@ -80,7 +81,7 @@ pub fn view<'a>(
             let padded = widget::container(row_content).padding([0, 0, 0, indent]);
 
             let mut btn = widget::button::custom(padded)
-                .on_press(Message::SelectMessage(real_index))
+                .on_press(Message::ViewBody(real_index))
                 .width(Length::Fill);
 
             if is_selected {

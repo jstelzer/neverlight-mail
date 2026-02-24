@@ -150,6 +150,7 @@ pub fn flags_from_u8(f: u8) -> (bool, bool) {
 // Commands sent from async world → background thread
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::type_complexity)]
 enum CacheCmd {
     SaveFolders {
         folders: Vec<Folder>,
@@ -581,10 +582,8 @@ impl CacheHandle {
             let rows = stmt
                 .query_map([mailbox_hash as i64], |row| row.get::<_, i64>(0))
                 .map_err(|e| format!("Cache query error: {e}"))?;
-            for row in rows {
-                if let Ok(hash) = row {
-                    pending_set.insert(hash as u64);
-                }
+            for hash in rows.flatten() {
+                pending_set.insert(hash as u64);
             }
         }
 
