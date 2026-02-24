@@ -1,20 +1,22 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::keyboard;
 use cosmic::iced::{Event, Length, Subscription};
 use cosmic::widget;
-use cosmic::widget::text_editor;
+use cosmic::widget::{image, text_editor};
 use cosmic::Element;
 
-use melib::backends::FlagOp;
+use futures::{SinkExt, StreamExt};
+use melib::backends::{BackendEvent, FlagOp, RefreshEventKind};
 use melib::email::Flag;
 use melib::{EnvelopeHash, MailboxHash};
 
 use crate::config::{Config, ConfigNeedsInput, FileConfig, PasswordBackend, SmtpConfig};
 use crate::core::imap::ImapSession;
-use crate::core::models::{Folder, MessageSummary};
+use crate::core::models::{AttachmentData, Folder, MessageSummary};
 use crate::core::smtp::{self, OutgoingEmail};
 use crate::core::store::{self, CacheHandle, DEFAULT_PAGE_SIZE};
 use crate::ui::compose_dialog::ComposeMode;
@@ -37,6 +39,9 @@ pub struct AppModel {
     has_more_messages: bool,
 
     preview_body: String,
+    preview_content: text_editor::Content,
+    preview_attachments: Vec<AttachmentData>,
+    preview_image_handles: Vec<Option<image::Handle>>,
 
     /// Map folder paths (e.g. "Trash", "Archive") to mailbox hashes
     folder_map: HashMap<String, u64>,
@@ -86,7 +91,11 @@ pub enum Message {
     SelectMessage(usize),
     MessagesLoaded(Result<Vec<MessageSummary>, String>),
 
-    BodyLoaded(Result<String, String>),
+    BodyLoaded(Result<(String, Vec<AttachmentData>), String>),
+    PreviewAction(text_editor::Action),
+
+    SaveAttachment(usize),
+    SaveAttachmentComplete(Result<String, String>),
 
     // Cache-first messages
     CachedFoldersLoaded(Result<Vec<Folder>, String>),
@@ -127,6 +136,8 @@ pub enum Message {
     ComposeCancel,
     SendComplete(Result<(), String>),
 
+    ImapEvent(ImapWatchEvent),
+
     OpenLink(String),
     Refresh,
     Noop,
@@ -141,6 +152,18 @@ pub enum Message {
     SetupEmailAddressesChanged(String),
     SetupSubmit,
     SetupCancel,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImapWatchEvent {
+    NewMessage {
+        mailbox_hash: u64,
+        subject: String,
+        from: String,
+        envelope_hash: u64,
+    },
+    WatchError(String),
+    WatchEnded,
 }
 
 impl cosmic::Application for AppModel {
@@ -183,6 +206,9 @@ impl cosmic::Application for AppModel {
             messages_offset: 0,
             has_more_messages: false,
             preview_body: String::new(),
+            preview_content: text_editor::Content::new(),
+            preview_attachments: Vec::new(),
+            preview_image_handles: Vec::new(),
             folder_map: HashMap::new(),
             collapsed_threads: HashSet::new(),
             visible_indices: Vec::new(),
@@ -283,7 +309,7 @@ impl cosmic::Application for AppModel {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        cosmic::iced_futures::event::listen_raw(|event, status, _| {
+        let keyboard_sub = cosmic::iced_futures::event::listen_raw(|event, status, _| {
             if cosmic::iced_core::event::Status::Ignored != status {
                 return None;
             }
@@ -335,7 +361,19 @@ impl cosmic::Application for AppModel {
                 },
                 _ => None,
             }
-        })
+        });
+
+        let mut subs = vec![keyboard_sub];
+
+        if let Some(session) = &self.session {
+            let session = session.clone();
+            subs.push(
+                Subscription::run_with_id("imap-watch", imap_watch_stream(session))
+                    .map(Message::ImapEvent),
+            );
+        }
+
+        Subscription::batch(subs)
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -351,7 +389,12 @@ impl cosmic::Application for AppModel {
         let selected_msg = self.selected_message.and_then(|i| {
             self.messages.get(i).map(|msg| (i, msg))
         });
-        let message_view = crate::ui::message_view::view(&self.preview_body, selected_msg);
+        let message_view = crate::ui::message_view::view(
+            &self.preview_content,
+            selected_msg,
+            &self.preview_attachments,
+            &self.preview_image_handles,
+        );
 
         let main_content = widget::row()
             .push(
@@ -908,6 +951,9 @@ impl cosmic::Application for AppModel {
                 self.messages.clear();
                 self.selected_message = None;
                 self.preview_body.clear();
+                self.preview_content = text_editor::Content::new();
+                self.preview_attachments.clear();
+                self.preview_image_handles.clear();
                 self.messages_offset = 0;
                 self.has_more_messages = false;
                 self.collapsed_threads.clear();
@@ -1006,13 +1052,16 @@ impl cosmic::Application for AppModel {
                         self.status_message = "Loading message...".into();
                         return cosmic::task::future(async move {
                             match cache.load_body(envelope_hash).await {
-                                Ok(Some(body)) => Message::BodyLoaded(Ok(body)),
+                                Ok(Some(body)) => {
+                                    // Cached body is text-only, no attachments
+                                    Message::BodyLoaded(Ok((body, Vec::new())))
+                                }
                                 _ => {
                                     if let Some(session) = session {
                                         let result = session
                                             .fetch_body(EnvelopeHash(envelope_hash))
                                             .await;
-                                        if let Ok(ref body) = result {
+                                        if let Ok((ref body, _)) = result {
                                             if let Err(e) = cache
                                                 .save_body(envelope_hash, body.clone())
                                                 .await
@@ -1046,14 +1095,62 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::BodyLoaded(Ok(body)) => {
+            Message::BodyLoaded(Ok((body, attachments))) => {
+                self.preview_content = text_editor::Content::with_text(&body);
                 self.preview_body = body;
+                self.preview_image_handles = attachments
+                    .iter()
+                    .map(|a| {
+                        if a.is_image() {
+                            Some(image::Handle::from_bytes(a.data.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.preview_attachments = attachments;
                 self.status_message = "Ready".into();
             }
             Message::BodyLoaded(Err(e)) => {
-                self.preview_body = format!("Failed to load message body: {}", e);
+                let msg = format!("Failed to load message body: {}", e);
+                self.preview_content = text_editor::Content::with_text(&msg);
+                self.preview_body = msg;
                 self.status_message = "Error loading message".into();
                 log::error!("Body fetch failed: {}", e);
+            }
+
+            Message::PreviewAction(action) => {
+                if !matches!(action, text_editor::Action::Edit(_)) {
+                    self.preview_content.perform(action);
+                }
+            }
+
+            Message::SaveAttachment(index) => {
+                if let Some(att) = self.preview_attachments.get(index) {
+                    let filename = att.filename.clone();
+                    let data = att.data.clone();
+                    return cosmic::task::future(async move {
+                        let dir = dirs::download_dir()
+                            .unwrap_or_else(|| PathBuf::from("."));
+                        let path = dir.join(&filename);
+                        match tokio::fs::write(&path, &data).await {
+                            Ok(()) => Message::SaveAttachmentComplete(
+                                Ok(path.display().to_string()),
+                            ),
+                            Err(e) => Message::SaveAttachmentComplete(
+                                Err(format!("Save failed: {e}")),
+                            ),
+                        }
+                    });
+                }
+            }
+
+            Message::SaveAttachmentComplete(Ok(path)) => {
+                self.status_message = format!("Saved to {path}");
+            }
+            Message::SaveAttachmentComplete(Err(e)) => {
+                self.status_message = e;
+                log::error!("Attachment save failed: {}", self.status_message);
             }
 
             // -----------------------------------------------------------------
@@ -1173,6 +1270,9 @@ impl cosmic::Application for AppModel {
                             } else if self.messages.is_empty() {
                                 self.selected_message = None;
                                 self.preview_body.clear();
+                                self.preview_content = text_editor::Content::new();
+                                self.preview_attachments.clear();
+                                self.preview_image_handles.clear();
                             }
                         }
                         self.recompute_visible();
@@ -1230,6 +1330,9 @@ impl cosmic::Application for AppModel {
                             } else if self.messages.is_empty() {
                                 self.selected_message = None;
                                 self.preview_body.clear();
+                                self.preview_content = text_editor::Content::new();
+                                self.preview_attachments.clear();
+                                self.preview_image_handles.clear();
                             }
                         }
                         self.recompute_visible();
@@ -1413,6 +1516,45 @@ impl cosmic::Application for AppModel {
             Message::OpenLink(url) => {
                 crate::core::mime::open_link(&url);
             }
+            // -----------------------------------------------------------------
+            // IMAP watch events (new mail notifications)
+            // -----------------------------------------------------------------
+            Message::ImapEvent(ImapWatchEvent::NewMessage {
+                mailbox_hash,
+                subject,
+                from,
+                ..
+            }) => {
+                let notif_task = cosmic::task::future(async move {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = notify_rust::Notification::new()
+                            .summary(&format!("From: {}", from))
+                            .body(&subject)
+                            .icon("mail-message-new")
+                            .timeout(5000)
+                            .show();
+                    })
+                    .await;
+                    Message::Noop
+                });
+
+                if let Some(idx) = self.selected_folder {
+                    if let Some(folder) = self.folders.get(idx) {
+                        if folder.mailbox_hash == mailbox_hash {
+                            let refresh_task = self.update(Message::Refresh);
+                            return cosmic::task::batch(vec![notif_task, refresh_task]);
+                        }
+                    }
+                }
+                return notif_task;
+            }
+            Message::ImapEvent(ImapWatchEvent::WatchError(e)) => {
+                log::warn!("IMAP watch error: {}", e);
+            }
+            Message::ImapEvent(ImapWatchEvent::WatchEnded) => {
+                log::info!("IMAP watch stream ended");
+            }
+
             Message::Refresh => {
                 if let Some(session) = &self.session {
                     let session = session.clone();
@@ -1566,4 +1708,48 @@ fn build_references(in_reply_to: Option<&str>, message_id: &str) -> String {
         Some(irt) => format!("{irt} {message_id}"),
         None => message_id.to_string(),
     }
+}
+
+fn imap_watch_stream(
+    session: Arc<ImapSession>,
+) -> impl futures::Stream<Item = ImapWatchEvent> {
+    cosmic::iced_futures::stream::channel(50, move |mut output| async move {
+        match session.watch().await {
+            Ok(stream) => {
+                let mut stream = std::pin::pin!(stream);
+                while let Some(event) = stream.next().await {
+                    match event {
+                        Ok(BackendEvent::Refresh(rev)) => {
+                            if let RefreshEventKind::Create(envelope) = rev.kind {
+                                let from = envelope
+                                    .from()
+                                    .iter()
+                                    .map(|a| a.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let _ = output
+                                    .send(ImapWatchEvent::NewMessage {
+                                        mailbox_hash: rev.mailbox_hash.0,
+                                        subject: envelope.subject().to_string(),
+                                        from,
+                                        envelope_hash: envelope.hash().0,
+                                    })
+                                    .await;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = output
+                                .send(ImapWatchEvent::WatchError(e.to_string()))
+                                .await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = output.send(ImapWatchEvent::WatchError(e)).await;
+            }
+        }
+        let _ = output.send(ImapWatchEvent::WatchEnded).await;
+    })
 }

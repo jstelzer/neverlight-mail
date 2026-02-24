@@ -13,7 +13,7 @@ use melib::imap::ImapType;
 use melib::{AccountHash, EnvelopeHash, Mail, MailboxHash};
 
 use crate::config::Config;
-use crate::core::models::{Folder, MessageSummary};
+use crate::core::models::{AttachmentData, Folder, MessageSummary};
 
 /// A live IMAP session backed by melib.
 pub struct ImapSession {
@@ -242,11 +242,11 @@ impl ImapSession {
         Ok(())
     }
 
-    /// Fetch and render the body of a single message.
+    /// Fetch and render the body of a single message, extracting attachments.
     pub async fn fetch_body(
         self: &Arc<Self>,
         envelope_hash: EnvelopeHash,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Vec<AttachmentData>), String> {
         let future = {
             let backend = self.backend.lock().await;
             backend
@@ -262,12 +262,31 @@ impl ImapSession {
             Mail::new(bytes, None).map_err(|e| format!("Failed to parse message: {}", e))?;
 
         let body_attachment = mail.body();
-        let (text_plain, text_html) = extract_body_text(&body_attachment);
+        let (text_plain, text_html, attachments) = extract_body(&body_attachment);
 
-        Ok(crate::core::mime::render_body(
+        let rendered = crate::core::mime::render_body(
             text_plain.as_deref(),
             text_html.as_deref(),
-        ))
+        );
+
+        Ok((rendered, attachments))
+    }
+
+    /// Start watching for backend events (IMAP IDLE or poll fallback).
+    /// Returns a `'static` stream — safe to hold after releasing the lock.
+    pub async fn watch(
+        self: &Arc<Self>,
+    ) -> Result<
+        impl futures::Stream<Item = melib::error::Result<melib::backends::BackendEvent>>,
+        String,
+    > {
+        let stream = {
+            let backend = self.backend.lock().await;
+            backend
+                .watch()
+                .map_err(|e| format!("Failed to start watch: {}", e))?
+        };
+        Ok(stream)
     }
 }
 
@@ -285,39 +304,53 @@ fn compute_thread_id(message_id: &str, references: &[MessageID]) -> u64 {
     hasher.finish()
 }
 
-/// Walk the MIME tree and extract text/plain and text/html parts.
-fn extract_body_text(
+/// Walk the MIME tree and extract text/plain, text/html, and attachments.
+fn extract_body(
     att: &melib::email::attachments::Attachment,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Vec<AttachmentData>) {
     let mut text_plain = None;
     let mut text_html = None;
-    extract_parts(att, &mut text_plain, &mut text_html);
-    (text_plain, text_html)
+    let mut attachments = Vec::new();
+    extract_parts(att, &mut text_plain, &mut text_html, &mut attachments);
+    (text_plain, text_html, attachments)
 }
 
 fn extract_parts(
     att: &melib::email::attachments::Attachment,
     plain: &mut Option<String>,
     html: &mut Option<String>,
+    attachments: &mut Vec<AttachmentData>,
 ) {
     match &att.content_type {
         ContentType::Text {
             kind: Text::Plain, ..
-        } => {
+        } if !att.content_disposition.kind.is_attachment() => {
             let bytes = att.decode(Default::default());
             *plain = Some(String::from_utf8_lossy(&bytes).to_string());
         }
         ContentType::Text {
             kind: Text::Html, ..
-        } => {
+        } if !att.content_disposition.kind.is_attachment() => {
             let bytes = att.decode(Default::default());
             *html = Some(String::from_utf8_lossy(&bytes).to_string());
         }
         ContentType::Multipart { parts, .. } => {
             for part in parts {
-                extract_parts(part, plain, html);
+                extract_parts(part, plain, html, attachments);
             }
         }
-        _ => {}
+        _ => {
+            // Everything here is non-text, non-multipart — real content.
+            // Extract regardless of disposition (inline images are common).
+            let filename = att
+                .filename()
+                .or_else(|| att.content_disposition.filename.clone())
+                .unwrap_or_else(|| "unnamed".into());
+            attachments.push(AttachmentData {
+                filename,
+                mime_type: att.content_type.to_string(),
+                data: att.decode(Default::default()),
+            });
+        }
     }
 }

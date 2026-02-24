@@ -47,6 +47,22 @@ pub struct Attachment {
     pub size: u64,
 }
 
+/// Decoded attachment data for display and saving.
+#[derive(Debug, Clone)]
+pub struct AttachmentData {
+    pub filename: String,
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+impl AttachmentData {
+    pub fn is_image(&self) -> bool {
+        self.mime_type
+            .to_ascii_lowercase()
+            .starts_with("image/")
+    }
+}
+
 /// Account connection state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {
