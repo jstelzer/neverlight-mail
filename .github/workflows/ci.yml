@@ -19,6 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libdbus-1-dev \
             libexpat1-dev \
             libfontconfig-dev \
             libfreetype-dev \
@@ -26,7 +27,8 @@ jobs:
             libseat-dev \
             libudev-dev \
             libwayland-dev \
-            libxkbcommon-dev
+            libxkbcommon-dev \
+            pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
 
