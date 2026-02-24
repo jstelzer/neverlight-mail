@@ -72,6 +72,53 @@ fn run_migrations(conn: &Connection) {
     ) {
         log::warn!("Index creation failed: {}", e);
     }
+
+    // FTS5 full-text search index (external content, keyed to messages rowid).
+    // Column names MUST match the content table for rebuild to work.
+    // Drop stale FTS objects from earlier schema that used wrong column name ('body').
+    for stale in &[
+        "DROP TRIGGER IF EXISTS messages_fts_ai",
+        "DROP TRIGGER IF EXISTS messages_fts_ad",
+        "DROP TRIGGER IF EXISTS messages_fts_au",
+        "DROP TABLE IF EXISTS message_fts",
+    ] {
+        let _ = conn.execute_batch(stale);
+    }
+
+    let fts_ddl = [
+        "CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
+            subject,
+            sender,
+            body_rendered,
+            content='messages',
+            content_rowid='rowid'
+        )",
+        // Auto-sync triggers
+        "CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+          INSERT INTO message_fts(rowid, subject, sender, body_rendered)
+          VALUES (new.rowid, new.subject, new.sender, new.body_rendered);
+        END",
+        "CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+          INSERT INTO message_fts(message_fts, rowid, subject, sender, body_rendered)
+          VALUES('delete', old.rowid, old.subject, old.sender, old.body_rendered);
+        END",
+        "CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+          INSERT INTO message_fts(message_fts, rowid, subject, sender, body_rendered)
+          VALUES('delete', old.rowid, old.subject, old.sender, old.body_rendered);
+          INSERT INTO message_fts(rowid, subject, sender, body_rendered)
+          VALUES (new.rowid, new.subject, new.sender, new.body_rendered);
+        END",
+    ];
+    for ddl in &fts_ddl {
+        if let Err(e) = conn.execute_batch(ddl) {
+            log::warn!("FTS5 migration failed ({}): {}", ddl.chars().take(60).collect::<String>(), e);
+        }
+    }
+
+    // Rebuild FTS index from existing content (idempotent, fast if current)
+    if let Err(e) = conn.execute("INSERT INTO message_fts(message_fts) VALUES('rebuild')", []) {
+        log::warn!("FTS5 rebuild failed: {}", e);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +201,10 @@ enum CacheCmd {
     RemoveMessage {
         envelope_hash: u64,
         reply: oneshot::Sender<Result<(), String>>,
+    },
+    Search {
+        query: String,
+        reply: oneshot::Sender<Result<Vec<MessageSummary>, String>>,
     },
 }
 
@@ -352,6 +403,15 @@ impl CacheHandle {
         rx.await.map_err(|_| "Cache unavailable".to_string())?
     }
 
+    /// Full-text search across all folders.
+    pub async fn search(&self, query: String) -> Result<Vec<MessageSummary>, String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CacheCmd::Search { query, reply })
+            .map_err(|_| "Cache unavailable".to_string())?;
+        rx.await.map_err(|_| "Cache unavailable".to_string())?
+    }
+
     // -- background thread ---------------------------------------------------
 
     fn run_loop(conn: Connection, mut rx: mpsc::UnboundedReceiver<CacheCmd>) {
@@ -436,6 +496,9 @@ impl CacheHandle {
                     reply,
                 } => {
                     let _ = reply.send(Self::do_remove_message(&conn, envelope_hash));
+                }
+                CacheCmd::Search { query, reply } => {
+                    let _ = reply.send(Self::do_search(&conn, &query));
                 }
             }
         }
@@ -864,6 +927,67 @@ impl CacheHandle {
         )
         .map_err(|e| format!("Cache remove_message error: {e}"))?;
         Ok(())
+    }
+
+    fn do_search(conn: &Connection, query: &str) -> Result<Vec<MessageSummary>, String> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.envelope_hash, m.subject, m.sender, m.date, m.timestamp,
+                        m.is_read, m.is_starred, m.has_attachments, m.thread_id,
+                        m.flags_server, m.flags_local, m.pending_op, m.mailbox_hash,
+                        m.message_id, m.in_reply_to, m.thread_depth
+                 FROM messages m
+                 WHERE m.rowid IN (SELECT rowid FROM message_fts WHERE message_fts MATCH ?1)
+                 ORDER BY m.timestamp DESC
+                 LIMIT 200",
+            )
+            .map_err(|e| format!("Search prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map([query], |row| {
+                let envelope_hash: i64 = row.get(0)?;
+                let thread_id: Option<i64> = row.get(8)?;
+                let flags_server: i32 = row.get::<_, Option<i32>>(9)?.unwrap_or(0);
+                let flags_local: i32 = row.get::<_, Option<i32>>(10)?.unwrap_or(0);
+                let pending_op: Option<String> = row.get(11)?;
+                let mbox_hash: i64 = row.get(12)?;
+
+                let effective_flags = if pending_op.is_some() {
+                    flags_local as u8
+                } else {
+                    flags_server as u8
+                };
+                let (is_read, is_starred) = flags_from_u8(effective_flags);
+
+                Ok(MessageSummary {
+                    uid: envelope_hash as u64,
+                    subject: row.get(1)?,
+                    from: row.get(2)?,
+                    date: row.get(3)?,
+                    timestamp: row.get(4)?,
+                    is_read,
+                    is_starred,
+                    has_attachments: row.get::<_, i32>(7)? != 0,
+                    thread_id: thread_id.map(|t| t as u64),
+                    envelope_hash: envelope_hash as u64,
+                    mailbox_hash: mbox_hash as u64,
+                    message_id: row.get::<_, Option<String>>(13)?.unwrap_or_default(),
+                    in_reply_to: row.get(14)?,
+                    thread_depth: row.get::<_, Option<u32>>(15)?.unwrap_or(0),
+                })
+            })
+            .map_err(|e| format!("Search query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Search row error: {e}"))?);
+        }
+        Ok(results)
     }
 }
 

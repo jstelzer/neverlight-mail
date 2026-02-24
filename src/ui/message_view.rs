@@ -13,7 +13,7 @@ pub fn view<'a>(
     attachments: &[AttachmentData],
     image_handles: &[Option<image::Handle>],
 ) -> Element<'a, Message> {
-    if body.text().is_empty() && attachments.is_empty() {
+    if body.text().trim().is_empty() && attachments.is_empty() {
         return widget::container(widget::text::body("Select a message to read"))
             .padding(16)
             .width(Length::Fill)

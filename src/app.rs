@@ -56,6 +56,11 @@ pub struct AppModel {
     is_syncing: bool,
     status_message: String,
 
+    // Search state
+    search_active: bool,
+    search_query: String,
+    search_focused: bool,
+
     // Compose dialog state
     show_compose_dialog: bool,
     compose_mode: ComposeMode,
@@ -137,6 +142,13 @@ pub enum Message {
     SendComplete(Result<(), String>),
 
     ImapEvent(ImapWatchEvent),
+
+    // Search
+    SearchActivate,
+    SearchQueryChanged(String),
+    SearchExecute,
+    SearchResultsLoaded(Result<Vec<MessageSummary>, String>),
+    SearchClear,
 
     OpenLink(String),
     Refresh,
@@ -227,6 +239,10 @@ impl cosmic::Application for AppModel {
             thread_sizes: HashMap::new(),
             is_syncing: false,
             status_message: "Starting up...".into(),
+
+            search_active: false,
+            search_query: String::new(),
+            search_focused: false,
 
             show_compose_dialog: false,
             compose_mode: ComposeMode::New,
@@ -321,61 +337,86 @@ impl cosmic::Application for AppModel {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        let keyboard_sub = cosmic::iced_futures::event::listen_raw(|event, status, _| {
-            if cosmic::iced_core::event::Status::Ignored != status {
-                return None;
-            }
-            match event {
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key, modifiers, ..
-                }) => match key {
-                    keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
-                        Some(Message::SelectionDown)
-                    }
-                    keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-                        Some(Message::SelectionUp)
-                    }
-                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                        Some(Message::ActivateSelection)
-                    }
-                    keyboard::Key::Character(ref c)
-                        if c.as_str() == "j" && !modifiers.control() =>
-                    {
-                        Some(Message::SelectionDown)
-                    }
-                    keyboard::Key::Character(ref c)
-                        if c.as_str() == "k" && !modifiers.control() =>
-                    {
-                        Some(Message::SelectionUp)
-                    }
-                    keyboard::Key::Character(ref c) if c.as_str() == " " => {
-                        Some(Message::ToggleThreadCollapse)
-                    }
-                    keyboard::Key::Character(ref c)
-                        if c.as_str() == "c" && !modifiers.control() =>
-                    {
-                        Some(Message::ComposeNew)
-                    }
-                    keyboard::Key::Character(ref c)
-                        if c.as_str() == "r" && !modifiers.control() =>
-                    {
-                        Some(Message::ComposeReply)
-                    }
-                    keyboard::Key::Character(ref c)
-                        if c.as_str() == "f" && !modifiers.control() =>
-                    {
-                        Some(Message::ComposeForward)
-                    }
-                    keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                        Some(Message::ComposeCancel)
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }
-        });
+        let mut subs = Vec::new();
 
-        let mut subs = vec![keyboard_sub];
+        if self.search_focused {
+            // When search input has focus, only intercept Escape.
+            // All other keys must reach the text_input widget unimpeded.
+            subs.push(cosmic::iced_futures::event::listen_raw(|event, status, _| {
+                if cosmic::iced_core::event::Status::Ignored != status {
+                    return None;
+                }
+                match event {
+                    Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
+                        keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                            Some(Message::SearchClear)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }));
+        } else {
+            // Full keyboard shortcuts when not typing in search
+            subs.push(cosmic::iced_futures::event::listen_raw(|event, status, _| {
+                if cosmic::iced_core::event::Status::Ignored != status {
+                    return None;
+                }
+                match event {
+                    Event::Keyboard(keyboard::Event::KeyPressed {
+                        key, modifiers, ..
+                    }) => match key {
+                        keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                            Some(Message::SelectionDown)
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                            Some(Message::SelectionUp)
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                            Some(Message::ActivateSelection)
+                        }
+                        keyboard::Key::Character(ref c)
+                            if c.as_str() == "/" && !modifiers.control() =>
+                        {
+                            Some(Message::SearchActivate)
+                        }
+                        keyboard::Key::Character(ref c)
+                            if c.as_str() == "j" && !modifiers.control() =>
+                        {
+                            Some(Message::SelectionDown)
+                        }
+                        keyboard::Key::Character(ref c)
+                            if c.as_str() == "k" && !modifiers.control() =>
+                        {
+                            Some(Message::SelectionUp)
+                        }
+                        keyboard::Key::Character(ref c) if c.as_str() == " " => {
+                            Some(Message::ToggleThreadCollapse)
+                        }
+                        keyboard::Key::Character(ref c)
+                            if c.as_str() == "c" && !modifiers.control() =>
+                        {
+                            Some(Message::ComposeNew)
+                        }
+                        keyboard::Key::Character(ref c)
+                            if c.as_str() == "r" && !modifiers.control() =>
+                        {
+                            Some(Message::ComposeReply)
+                        }
+                        keyboard::Key::Character(ref c)
+                            if c.as_str() == "f" && !modifiers.control() =>
+                        {
+                            Some(Message::ComposeForward)
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                            Some(Message::SearchClear)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }));
+        }
 
         if let Some(session) = &self.session {
             let session = session.clone();
@@ -394,9 +435,11 @@ impl cosmic::Application for AppModel {
             &self.messages,
             &self.visible_indices,
             self.selected_message,
-            self.has_more_messages,
+            self.has_more_messages && !self.search_active,
             &self.collapsed_threads,
             &self.thread_sizes,
+            self.search_active,
+            &self.search_query,
         );
         let selected_msg = self.selected_message.and_then(|i| {
             self.messages.get(i).map(|msg| (i, msg))
@@ -1524,6 +1567,76 @@ impl cosmic::Application for AppModel {
                             }
                         }
                     }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // Search
+            // -----------------------------------------------------------------
+            Message::SearchActivate => {
+                if self.show_setup_dialog || self.show_compose_dialog || self.search_focused {
+                    return Task::none();
+                }
+                self.search_active = true;
+                self.search_focused = true;
+                self.search_query.clear();
+                return widget::text_input::focus(
+                    crate::ui::message_list::search_input_id(),
+                );
+            }
+            Message::SearchQueryChanged(q) => {
+                self.search_query = q;
+            }
+            Message::SearchExecute => {
+                let query = self.search_query.trim().to_string();
+                if query.is_empty() {
+                    return Task::none();
+                }
+                if let Some(cache) = &self.cache {
+                    let cache = cache.clone();
+                    self.status_message = "Searching...".into();
+                    return cosmic::task::future(async move {
+                        Message::SearchResultsLoaded(cache.search(query).await)
+                    });
+                }
+            }
+            Message::SearchResultsLoaded(Ok(results)) => {
+                let count = results.len();
+                let query = self.search_query.clone();
+                self.messages = results;
+                self.selected_message = None;
+                self.preview_body.clear();
+                self.preview_content = text_editor::Content::new();
+                self.preview_attachments.clear();
+                self.preview_image_handles.clear();
+                self.collapsed_threads.clear();
+                self.has_more_messages = false;
+                self.recompute_visible();
+                self.search_focused = false;
+                if count > 0 {
+                    self.status_message = format!("Search: {} results for \"{}\"", count, query);
+                } else {
+                    self.status_message = format!("Search: no results for \"{}\"", query);
+                }
+            }
+            Message::SearchResultsLoaded(Err(e)) => {
+                self.search_focused = false;
+                self.status_message = format!("Search failed: {}", e);
+                log::error!("Search failed: {}", e);
+            }
+            Message::SearchClear => {
+                if self.search_active {
+                    self.search_active = false;
+                    self.search_focused = false;
+                    self.search_query.clear();
+                    // Restore previous folder view
+                    if let Some(idx) = self.selected_folder {
+                        return self.update(Message::SelectFolder(idx));
+                    }
+                } else {
+                    // Not searching — Escape cancels compose dialog
+                    self.show_compose_dialog = false;
+                    self.is_sending = false;
                 }
             }
 

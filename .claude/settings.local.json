@@ -10,7 +10,11 @@
       "Bash(cargo check:*)",
       "Bash(cargo update:*)",
       "Bash(ls:*)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(head:*)",
+      "Bash(cargo build:*)",
+      "Bash(sqlite3 :memory::*)",
+      "Bash(grep:*)"
     ]
   }
 }

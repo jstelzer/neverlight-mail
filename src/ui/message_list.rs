@@ -7,6 +7,10 @@ use cosmic::Element;
 use crate::app::Message;
 use crate::core::models::MessageSummary;
 
+pub fn search_input_id() -> widget::Id {
+    widget::Id::new("search-input")
+}
+
 /// Render the message list for the selected folder.
 pub fn view<'a>(
     messages: &'a [MessageSummary],
@@ -15,8 +19,25 @@ pub fn view<'a>(
     has_more: bool,
     collapsed_threads: &HashSet<u64>,
     thread_sizes: &HashMap<u64, usize>,
+    search_active: bool,
+    search_query: &'a str,
 ) -> Element<'a, Message> {
     let mut col = widget::column().spacing(2).padding(8);
+
+    if search_active {
+        let input = widget::text_input("Search all mail...", search_query)
+            .on_input(Message::SearchQueryChanged)
+            .on_submit(|_| Message::SearchExecute)
+            .id(search_input_id());
+        let clear_btn = widget::button::text("Clear").on_press(Message::SearchClear);
+        col = col.push(
+            widget::row()
+                .push(widget::container(input).width(Length::Fill))
+                .push(clear_btn)
+                .spacing(4)
+                .align_y(cosmic::iced::Alignment::Center),
+        );
+    }
 
     if messages.is_empty() {
         col = col.push(widget::text::body("No messages"));
