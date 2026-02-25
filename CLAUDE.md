@@ -1,6 +1,6 @@
 # Claude Context: Nevermail (cosmic-email)
 
-**Last Updated:** 2025-02-23
+**Last Updated:** 2026-02-25
 
 ## What This Is
 
@@ -30,19 +30,51 @@ This is an upstream melib bug. Monitor melib releases for a fix.
 
 ```
 src/
-├── main.rs          — Entry point, env_logger init, cosmic::app::run
-├── app.rs           — AppModel + Message enum, async task wiring
-├── config.rs        — Config struct, Config::from_env()
+├── main.rs                    — Entry point, env_logger init, cosmic::app::run
+├── config.rs                  — Config resolution (env → file+keyring → setup dialog)
+├── app/
+│   ├── mod.rs                 — AppModel struct, Message enum, trait impl, dispatcher
+│   ├── actions.rs             — Flag/move handlers (toggle read/star, trash, archive)
+│   ├── body.rs                — Body/attachment viewing handlers
+│   ├── compose.rs             — Compose handlers + quote/forward helpers
+│   ├── navigation.rs          — Keyboard nav + recompute_visible()
+│   ├── search.rs              — FTS search handlers
+│   ├── setup.rs               — Setup dialog handlers + view builder
+│   ├── sync.rs                — Connection/sync/folder handlers + rebuild_folder_map()
+│   └── watch.rs               — IMAP IDLE watch stream + event handlers
 ├── core/
-│   ├── imap.rs      — ImapSession: connect, fetch_folders, fetch_messages, fetch_body
-│   ├── mime.rs      — render_body (text/plain preference, html2text fallback), open_link
-│   ├── models.rs    — Folder, MessageSummary, MessageBody, Attachment, ConnectionState
-│   └── store.rs     — SQLite stubs (not wired yet)
+│   ├── imap.rs                — ImapSession: connect, fetch, flags, move, watch
+│   ├── mime.rs                — render_body, clean_email_html, open_link
+│   ├── smtp.rs                — SMTP send via lettre
+│   ├── keyring.rs             — OS keyring credential backend
+│   ├── models.rs              — Folder, MessageSummary, AttachmentData
+│   └── store/
+│       ├── mod.rs             — Re-exports (CacheHandle, flags_to_u8, DEFAULT_PAGE_SIZE)
+│       ├── schema.rs          — DDL + forward-only migrations + FTS5 setup
+│       ├── flags.rs           — Flag encode/decode (compact 2-bit encoding)
+│       ├── commands.rs        — CacheCmd enum (channel message types)
+│       ├── queries.rs         — All do_* SQL functions + shared row_to_summary
+│       └── handle.rs          — CacheHandle async facade + background thread run_loop
 └── ui/
-    ├── sidebar.rs   — Folder list view
-    ├── message_list.rs — Message header list view
-    └── message_view.rs — Message body preview pane
+    ├── sidebar.rs             — Folder list view
+    ├── message_list.rs        — Message header list + search bar
+    ├── message_view.rs        — Message body preview pane
+    └── compose_dialog.rs      — Compose/reply/forward dialog
 ```
+
+## Design Principles
+
+### Split by direction, not by feature
+Organize modules by *who calls whom*, not by domain noun. The app layer dispatches messages to handler modules (`sync.rs`, `actions.rs`, `compose.rs`, etc.) that each own a slice of the update logic. The core layer provides services (`imap`, `smtp`, `store`) that handlers call into. UI modules are pure view functions that take state and return elements. No layer reaches upward.
+
+### Traits only at real seam points
+Don't trait-everything. Add port traits (`MailBackend`, `SendBackend`, `SecretStore`) only when there's a concrete second consumer — testability or an alternate implementation. Right now `ImapSession` is the only mail backend and `keyring.rs` is small; speculative abstraction adds complexity without payoff.
+
+### Push arg lists into request/command structs
+When a function takes 4+ related parameters, collapse them into a struct. `CacheCmd` already does this for store operations. Extend the pattern outward when IMAP or SMTP call sites get unwieldy.
+
+### Friction-driven polish
+Only fix things that annoy you while actually reading mail. One commit per annoyance. This prevents rewrite spirals and keeps effort proportional to real pain.
 
 ## Key Design Decisions
 
@@ -106,8 +138,9 @@ Key types and their locations in melib 0.8.13:
 - `BackendEventConsumer::new(Arc<dyn Fn(AccountHash, BackendEvent) + Send + Sync>)`
 - Hash types: `MailboxHash(pub u64)`, `EnvelopeHash(pub u64)` — transparent newtypes
 
-## Known Limitations (Phase 0)
+## Known Limitations
 
-- **No SMTP** — read-only (lettre dep exists but isn't wired)
-- **No search, no threading, no attachment download**
+- **No offline compose** — requires active IMAP session for SMTP relay config
+- **No attachment upload** — compose is plain text only
+- **Move revert on failure** — trash/archive failures don't re-insert the optimistically removed message; a manual refresh restores state
 

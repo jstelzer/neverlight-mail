@@ -27,65 +27,65 @@ const APP_ID: &str = "com.neverlight.email";
 
 pub struct AppModel {
     core: Core,
-    pub(crate) config: Option<Config>,
+    pub(super) config: Option<Config>,
 
-    pub(crate) session: Option<Arc<ImapSession>>,
-    pub(crate) cache: Option<CacheHandle>,
+    pub(super) session: Option<Arc<ImapSession>>,
+    pub(super) cache: Option<CacheHandle>,
 
-    pub(crate) folders: Vec<Folder>,
-    pub(crate) selected_folder: Option<usize>,
+    pub(super) folders: Vec<Folder>,
+    pub(super) selected_folder: Option<usize>,
 
-    pub(crate) messages: Vec<MessageSummary>,
-    pub(crate) selected_message: Option<usize>,
-    pub(crate) messages_offset: u32,
-    pub(crate) has_more_messages: bool,
+    pub(super) messages: Vec<MessageSummary>,
+    pub(super) selected_message: Option<usize>,
+    pub(super) messages_offset: u32,
+    pub(super) has_more_messages: bool,
 
-    pub(crate) preview_body: String,
-    pub(crate) preview_markdown: Vec<markdown::Item>,
-    pub(crate) preview_attachments: Vec<AttachmentData>,
-    pub(crate) preview_image_handles: Vec<Option<image::Handle>>,
+    pub(super) preview_body: String,
+    pub(super) preview_markdown: Vec<markdown::Item>,
+    pub(super) preview_attachments: Vec<AttachmentData>,
+    pub(super) preview_image_handles: Vec<Option<image::Handle>>,
 
     /// Map folder paths (e.g. "Trash", "Archive") to mailbox hashes
-    pub(crate) folder_map: HashMap<String, u64>,
+    pub(super) folder_map: HashMap<String, u64>,
 
     /// Thread IDs that are currently collapsed (children hidden)
-    pub(crate) collapsed_threads: HashSet<u64>,
+    pub(super) collapsed_threads: HashSet<u64>,
     /// Maps visible row positions → real indices into `messages`
-    pub(crate) visible_indices: Vec<usize>,
+    pub(super) visible_indices: Vec<usize>,
     /// Total messages per thread_id (for collapse indicators)
-    pub(crate) thread_sizes: HashMap<u64, usize>,
+    pub(super) thread_sizes: HashMap<u64, usize>,
 
-    pub(crate) is_syncing: bool,
-    pub(crate) status_message: String,
+    pub(super) is_syncing: bool,
+    pub(super) status_message: String,
 
     // Search state
-    pub(crate) search_active: bool,
-    pub(crate) search_query: String,
-    pub(crate) search_focused: bool,
+    pub(super) search_active: bool,
+    pub(super) search_query: String,
+    pub(super) search_focused: bool,
 
     // Compose dialog state
-    pub(crate) show_compose_dialog: bool,
-    pub(crate) compose_mode: ComposeMode,
-    pub(crate) compose_from: usize,
-    pub(crate) compose_to: String,
-    pub(crate) compose_subject: String,
-    pub(crate) compose_body: text_editor::Content,
-    pub(crate) compose_in_reply_to: Option<String>,
-    pub(crate) compose_references: Option<String>,
-    pub(crate) compose_error: Option<String>,
-    pub(crate) is_sending: bool,
+    pub(super) show_compose_dialog: bool,
+    pub(super) compose_mode: ComposeMode,
+    pub(super) compose_from: usize,
+    pub(super) compose_to: String,
+    pub(super) compose_subject: String,
+    pub(super) compose_body: text_editor::Content,
+    pub(super) compose_in_reply_to: Option<String>,
+    pub(super) compose_references: Option<String>,
+    pub(super) compose_error: Option<String>,
+    pub(super) is_sending: bool,
 
     // Setup dialog state
-    pub(crate) show_setup_dialog: bool,
-    pub(crate) password_only_mode: bool,
-    pub(crate) setup_server: String,
-    pub(crate) setup_port: String,
-    pub(crate) setup_username: String,
-    pub(crate) setup_password: String,
-    pub(crate) setup_starttls: bool,
-    pub(crate) setup_password_visible: bool,
-    pub(crate) setup_email_addresses: String,
-    pub(crate) setup_error: Option<String>,
+    pub(super) show_setup_dialog: bool,
+    pub(super) password_only_mode: bool,
+    pub(super) setup_server: String,
+    pub(super) setup_port: String,
+    pub(super) setup_username: String,
+    pub(super) setup_password: String,
+    pub(super) setup_starttls: bool,
+    pub(super) setup_password_visible: bool,
+    pub(super) setup_email_addresses: String,
+    pub(super) setup_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -567,7 +567,7 @@ impl AppModel {
     }
 
     /// Dispatch a message through the update loop (for recursive calls from handlers).
-    pub(crate) fn dispatch(&mut self, message: Message) -> Task<Message> {
+    pub(super) fn dispatch(&mut self, message: Message) -> Task<Message> {
         <Self as cosmic::Application>::update(self, message)
     }
 }
