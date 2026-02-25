@@ -2,7 +2,7 @@
 Name=Nevermail
 Comment=COSMIC desktop email client
 Exec=nevermail
-Icon=nevermail
+Icon=com.neverlight.email
 Terminal=false
 Type=Application
 Categories=Network;Email;

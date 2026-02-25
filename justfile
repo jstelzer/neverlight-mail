@@ -19,21 +19,23 @@ run:
 
 install: release
     install -Dm755 target/release/nevermail {{bin_dir}}/nevermail
-    install -Dm644 nevermail.desktop {{app_dir}}/nevermail.desktop
-    install -Dm644 images/nevermail-16.png  {{icon_dir}}/16x16/apps/nevermail.png
-    install -Dm644 images/nevermail-32.png  {{icon_dir}}/32x32/apps/nevermail.png
-    install -Dm644 images/nevermail-48.png  {{icon_dir}}/48x48/apps/nevermail.png
-    install -Dm644 images/nevermail-64.png  {{icon_dir}}/64x64/apps/nevermail.png
-    install -Dm644 images/nevermail-128.png {{icon_dir}}/128x128/apps/nevermail.png
-    install -Dm644 images/nevermail-256.png {{icon_dir}}/256x256/apps/nevermail.png
-    install -Dm644 images/nevermail-512.png {{icon_dir}}/512x512/apps/nevermail.png
+    install -Dm644 com.neverlight.email.desktop {{app_dir}}/com.neverlight.email.desktop
+    install -Dm644 images/nevermail-16.png  {{icon_dir}}/16x16/apps/com.neverlight.email.png
+    install -Dm644 images/nevermail-32.png  {{icon_dir}}/32x32/apps/com.neverlight.email.png
+    install -Dm644 images/nevermail-48.png  {{icon_dir}}/48x48/apps/com.neverlight.email.png
+    install -Dm644 images/nevermail-64.png  {{icon_dir}}/64x64/apps/com.neverlight.email.png
+    install -Dm644 images/nevermail-128.png {{icon_dir}}/128x128/apps/com.neverlight.email.png
+    install -Dm644 images/nevermail-256.png {{icon_dir}}/256x256/apps/com.neverlight.email.png
+    install -Dm644 images/nevermail-512.png {{icon_dir}}/512x512/apps/com.neverlight.email.png
     -gtk-update-icon-cache {{icon_dir}}
+    -update-desktop-database {{app_dir}}
 
 uninstall:
     rm -f {{bin_dir}}/nevermail
-    rm -f {{app_dir}}/nevermail.desktop
-    for size in 16 32 48 64 128 256 512; do rm -f {{icon_dir}}/${size}x${size}/apps/nevermail.png; done
+    rm -f {{app_dir}}/com.neverlight.email.desktop
+    for size in 16 32 48 64 128 256 512; do rm -f {{icon_dir}}/${size}x${size}/apps/com.neverlight.email.png; done
     -gtk-update-icon-cache {{icon_dir}}
+    -update-desktop-database {{app_dir}}
 
 icons:
     cd images && for size in 512 256 128 64 48 32 16; do magick nevermail.png -resize ${size}x${size} nevermail-${size}.png; done

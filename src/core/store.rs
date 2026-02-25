@@ -920,6 +920,20 @@ impl CacheHandle {
             return Ok(Vec::new());
         }
 
+        // Auto-append prefix wildcard to each token for plural tolerance
+        // e.g. "goblin king" → "goblin* king*"
+        let fts_query: String = query
+            .split_whitespace()
+            .map(|token| {
+                if token.ends_with('*') || token.ends_with('"') {
+                    token.to_string()
+                } else {
+                    format!("{token}*")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
         let mut stmt = conn
             .prepare(
                 "SELECT m.envelope_hash, m.subject, m.sender, m.date, m.timestamp,
@@ -934,7 +948,7 @@ impl CacheHandle {
             .map_err(|e| format!("Search prepare error: {e}"))?;
 
         let rows = stmt
-            .query_map([query], |row| {
+            .query_map([&fts_query], |row| {
                 let envelope_hash: i64 = row.get(0)?;
                 let thread_id: Option<i64> = row.get(8)?;
                 let flags_server: i32 = row.get::<_, Option<i32>>(9)?.unwrap_or(0);
