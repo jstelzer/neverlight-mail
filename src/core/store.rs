@@ -922,17 +922,24 @@ impl CacheHandle {
 
         // Auto-append prefix wildcard to each token for plural tolerance
         // e.g. "goblin king" → "goblin* king*"
-        let fts_query: String = query
-            .split_whitespace()
-            .map(|token| {
-                if token.ends_with('*') || token.ends_with('"') {
-                    token.to_string()
-                } else {
-                    format!("{token}*")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        // Skip if user is using explicit FTS syntax (quotes, operators)
+        let fts_query: String = if query.contains('"') {
+            query.to_string()
+        } else {
+            query
+                .split_whitespace()
+                .map(|token| {
+                    let is_plain =
+                        token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                    if !is_plain || token.len() < 3 || token.ends_with('*') {
+                        token.to_string()
+                    } else {
+                        format!("{token}*")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
 
         let mut stmt = conn
             .prepare(

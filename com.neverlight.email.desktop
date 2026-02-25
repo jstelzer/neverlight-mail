@@ -8,3 +8,4 @@ Type=Application
 Categories=Network;Email;
 Keywords=email;mail;imap;
 StartupWMClass=com.neverlight.email
+StartupNotify=true
