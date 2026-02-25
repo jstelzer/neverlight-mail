@@ -5,7 +5,7 @@ use futures::{SinkExt, StreamExt};
 use melib::backends::{BackendEvent, RefreshEventKind};
 use melib::email::Flag;
 
-use super::{AppModel, ImapWatchEvent, Message};
+use super::{AppModel, ConnectionState, ImapWatchEvent, Message};
 use crate::core::imap::ImapSession;
 use crate::core::store;
 
@@ -201,9 +201,21 @@ impl AppModel {
 
             Message::ImapEvent(ImapWatchEvent::WatchError(e)) => {
                 log::warn!("IMAP watch error: {}", e);
+                self.conn_state = ConnectionState::Error(e);
+                self.session = None;
+                return cosmic::task::future(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    Message::ForceReconnect
+                });
             }
             Message::ImapEvent(ImapWatchEvent::WatchEnded) => {
                 log::info!("IMAP watch stream ended");
+                self.conn_state = ConnectionState::Error("Connection lost".into());
+                self.session = None;
+                return cosmic::task::future(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    Message::ForceReconnect
+                });
             }
 
             _ => {}

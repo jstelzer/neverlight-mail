@@ -2,11 +2,15 @@ use cosmic::iced::Length;
 use cosmic::widget;
 use cosmic::Element;
 
-use crate::app::Message;
+use crate::app::{ConnectionState, Message};
 use crate::core::models::Folder;
 
 /// Render the folder sidebar.
-pub fn view<'a>(folders: &[Folder], selected: Option<usize>) -> Element<'a, Message> {
+pub fn view<'a>(
+    folders: &[Folder],
+    selected: Option<usize>,
+    conn_state: &'a ConnectionState,
+) -> Element<'a, Message> {
     let mut col = widget::column().spacing(4).padding(8);
 
     col = col.push(
@@ -36,5 +40,40 @@ pub fn view<'a>(folders: &[Folder], selected: Option<usize>) -> Element<'a, Mess
         }
     }
 
-    widget::scrollable(col).height(Length::Fill).into()
+    let scrollable_folders = widget::scrollable(col).height(Length::Fill);
+
+    let status_pill = status_pill_view(conn_state);
+
+    widget::column()
+        .push(scrollable_folders)
+        .push(status_pill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn status_pill_view(conn_state: &ConnectionState) -> Element<'_, Message> {
+    let label = match conn_state {
+        ConnectionState::Connected => "● Connected".to_string(),
+        ConnectionState::Connecting => "◌ Connecting...".to_string(),
+        ConnectionState::Syncing => "◌ Syncing...".to_string(),
+        ConnectionState::Error(msg) => format!("● Offline — {}", msg),
+        ConnectionState::Disconnected => "○ Disconnected".to_string(),
+    };
+
+    let clickable = matches!(
+        conn_state,
+        ConnectionState::Connected | ConnectionState::Error(_) | ConnectionState::Disconnected
+    );
+
+    let pill = widget::container(widget::text::caption(label)).padding([6, 8]);
+
+    if clickable {
+        widget::button::custom(pill)
+            .on_press(Message::ForceReconnect)
+            .class(cosmic::theme::Button::Text)
+            .width(Length::Fill)
+            .into()
+    } else {
+        pill.width(Length::Fill).into()
+    }
 }

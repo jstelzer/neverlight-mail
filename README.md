@@ -113,6 +113,8 @@ For now, nevermail targets standard IMAP providers (Runbox, Fastmail, Migadu, se
 
 Message actions (buttons in preview pane): toggle read, toggle star, archive, trash, copy body, save attachment.
 
+The **connection status pill** at the bottom of the sidebar shows current IMAP state (Connected / Syncing / Offline). Click it to force a reconnect. Watch connections auto-recover after ~5 seconds on failure.
+
 ## Not yet supported
 
 - Multiple accounts

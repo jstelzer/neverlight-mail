@@ -2,7 +2,7 @@ use cosmic::app::Task;
 use cosmic::widget;
 use cosmic::Element;
 
-use super::{AppModel, Message};
+use super::{AppModel, ConnectionState, Message};
 use crate::config::{Config, FileConfig, PasswordBackend};
 use crate::core::imap::ImapSession;
 
@@ -109,7 +109,7 @@ impl AppModel {
                 self.show_setup_dialog = false;
                 self.setup_password.clear();
                 self.setup_error = None;
-                self.is_syncing = true;
+                self.conn_state = ConnectionState::Connecting;
                 self.status_message = "Connecting...".into();
 
                 return cosmic::task::future(async move {

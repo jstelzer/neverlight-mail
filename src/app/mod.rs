@@ -25,6 +25,15 @@ use crate::ui::compose_dialog::ComposeMode;
 
 const APP_ID: &str = "com.neverlight.email";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Syncing,
+    Error(String),
+}
+
 pub struct AppModel {
     core: Core,
     pub(super) config: Option<Config>,
@@ -55,7 +64,7 @@ pub struct AppModel {
     /// Total messages per thread_id (for collapse indicators)
     pub(super) thread_sizes: HashMap<u64, usize>,
 
-    pub(super) is_syncing: bool,
+    pub(super) conn_state: ConnectionState,
     pub(super) status_message: String,
 
     // Search state
@@ -150,6 +159,7 @@ pub enum Message {
     SearchResultsLoaded(Result<Vec<MessageSummary>, String>),
     SearchClear,
 
+    ForceReconnect,
     Refresh,
     Noop,
 
@@ -233,7 +243,7 @@ impl cosmic::Application for AppModel {
             collapsed_threads: HashSet::new(),
             visible_indices: Vec::new(),
             thread_sizes: HashMap::new(),
-            is_syncing: false,
+            conn_state: ConnectionState::Disconnected,
             status_message: "Starting up...".into(),
 
             search_active: false,
@@ -277,7 +287,7 @@ impl cosmic::Application for AppModel {
         match Config::resolve() {
             Ok(config) => {
                 app.config = Some(config.clone());
-                app.is_syncing = true;
+                app.conn_state = ConnectionState::Connecting;
                 tasks.push(cosmic::task::future(async move {
                     Message::Connected(ImapSession::connect(config).await)
                 }));
@@ -439,7 +449,7 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let sidebar = crate::ui::sidebar::view(&self.folders, self.selected_folder);
+        let sidebar = crate::ui::sidebar::view(&self.folders, self.selected_folder, &self.conn_state);
         let message_list = crate::ui::message_list::view(
             &self.messages,
             &self.visible_indices,
@@ -522,6 +532,7 @@ impl cosmic::Application for AppModel {
             | Message::SyncMessagesComplete(_)
             | Message::SelectFolder(_)
             | Message::LoadMoreMessages
+            | Message::ForceReconnect
             | Message::Refresh => self.handle_sync(message),
 
             // Body / attachment viewing
@@ -564,6 +575,13 @@ impl cosmic::Application for AppModel {
 impl AppModel {
     fn set_window_title(&self, title: String) -> cosmic::app::Task<Message> {
         self.core.set_title(self.core.main_window_id(), title)
+    }
+
+    pub(super) fn is_busy(&self) -> bool {
+        matches!(
+            self.conn_state,
+            ConnectionState::Connecting | ConnectionState::Syncing
+        )
     }
 
     /// Dispatch a message through the update loop (for recursive calls from handlers).

@@ -1,7 +1,8 @@
 use cosmic::app::Task;
 use melib::MailboxHash;
 
-use super::{AppModel, Message};
+use super::{AppModel, ConnectionState, Message};
+use crate::core::imap::ImapSession;
 use crate::core::store::DEFAULT_PAGE_SIZE;
 
 impl AppModel {
@@ -59,10 +60,10 @@ impl AppModel {
 
             Message::Connected(Ok(session)) => {
                 self.session = Some(session.clone());
+                self.conn_state = ConnectionState::Syncing;
                 let had_cached_folders = !self.folders.is_empty();
 
                 if !had_cached_folders {
-                    self.is_syncing = true;
                     self.status_message = "Connected. Loading folders...".into();
                 } else {
                     self.status_message = format!(
@@ -83,7 +84,7 @@ impl AppModel {
                 });
             }
             Message::Connected(Err(e)) => {
-                self.is_syncing = false;
+                self.conn_state = ConnectionState::Error(e.clone());
                 log::error!("IMAP connection failed: {}", e);
 
                 if self.folders.is_empty() && !self.show_setup_dialog {
@@ -110,7 +111,7 @@ impl AppModel {
             Message::SyncFoldersComplete(Ok(folders)) => {
                 self.folders = folders;
                 self.rebuild_folder_map();
-                self.is_syncing = false;
+                self.conn_state = ConnectionState::Connected;
                 self.status_message = format!("{} folders", self.folders.len());
 
                 if self.selected_folder.is_none() {
@@ -145,7 +146,7 @@ impl AppModel {
                 }
             }
             Message::SyncFoldersComplete(Err(e)) => {
-                self.is_syncing = false;
+                self.conn_state = ConnectionState::Connected;
                 if self.folders.is_empty() {
                     self.status_message = format!("Failed to load folders: {}", e);
                 } else {
@@ -159,7 +160,7 @@ impl AppModel {
             }
 
             Message::SyncMessagesComplete(Ok(())) => {
-                self.is_syncing = false;
+                self.conn_state = ConnectionState::Connected;
                 if let Some(idx) = self.selected_folder {
                     if let Some(folder) = self.folders.get(idx) {
                         let mailbox_hash = folder.mailbox_hash;
@@ -179,7 +180,7 @@ impl AppModel {
                 self.status_message = format!("{} messages (synced)", self.messages.len());
             }
             Message::SyncMessagesComplete(Err(e)) => {
-                self.is_syncing = false;
+                self.conn_state = ConnectionState::Connected;
                 self.status_message = format!("Sync failed: {}", e);
                 log::error!("Message sync failed: {}", e);
             }
@@ -214,7 +215,7 @@ impl AppModel {
                     if let Some(session) = &self.session {
                         let session = session.clone();
                         let cache = self.cache.clone();
-                        self.is_syncing = true;
+                        self.conn_state = ConnectionState::Syncing;
                         self.status_message = format!("Loading {}...", folder_name);
                         let mbox_hash = MailboxHash(mailbox_hash);
                         tasks.push(cosmic::task::future(async move {
@@ -264,7 +265,7 @@ impl AppModel {
                 if let Some(session) = &self.session {
                     let session = session.clone();
                     let cache = self.cache.clone();
-                    self.is_syncing = true;
+                    self.conn_state = ConnectionState::Syncing;
                     self.status_message = "Refreshing...".into();
                     return cosmic::task::future(async move {
                         let result = session.fetch_folders().await;
@@ -274,6 +275,20 @@ impl AppModel {
                             }
                         }
                         Message::SyncFoldersComplete(result)
+                    });
+                }
+            }
+
+            Message::ForceReconnect => {
+                if self.is_busy() {
+                    return Task::none();
+                }
+                self.session = None;
+                self.conn_state = ConnectionState::Connecting;
+                self.status_message = "Reconnecting...".into();
+                if let Some(config) = self.config.clone() {
+                    return cosmic::task::future(async move {
+                        Message::Connected(ImapSession::connect(config).await)
                     });
                 }
             }
