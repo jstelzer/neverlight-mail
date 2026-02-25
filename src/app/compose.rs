@@ -4,7 +4,7 @@ use cosmic::widget::text_editor;
 
 use super::{AppModel, Message};
 use crate::config::SmtpConfig;
-use crate::core::models::AttachmentData;
+use crate::core::models::{AttachmentData, DraggedFiles};
 use crate::core::smtp::{self, OutgoingEmail};
 use crate::ui::compose_dialog::ComposeMode;
 
@@ -199,6 +199,52 @@ impl AppModel {
                 }
             }
 
+            Message::ComposeDragEnter => {
+                self.compose_drag_hover = true;
+            }
+            Message::ComposeDragLeave => {
+                self.compose_drag_hover = false;
+            }
+            Message::ComposeFileTransfer(key) => {
+                self.compose_drag_hover = false;
+                return cosmic::task::future(async move {
+                    let result = async {
+                        let ft = ashpd::documents::FileTransfer::new().await?;
+                        ft.retrieve_files(&key).await
+                    }
+                    .await;
+                    Message::ComposeFileTransferResolved(
+                        result.map_err(|e| format!("Portal file transfer failed: {e}")),
+                    )
+                });
+            }
+            Message::ComposeFileTransferResolved(Ok(paths)) => {
+                return cosmic::task::future(async move {
+                    read_paths_as_attachments(paths).await
+                });
+            }
+            Message::ComposeFileTransferResolved(Err(e)) => {
+                self.compose_error = Some(e);
+            }
+            Message::ComposeFilesDropped(DraggedFiles(uri_list)) => {
+                self.compose_drag_hover = false;
+                return cosmic::task::future(async move {
+                    let paths: Vec<String> = uri_list
+                        .lines()
+                        .filter_map(|line| {
+                            let line = line.trim();
+                            if line.is_empty() || line.starts_with('#') {
+                                return None;
+                            }
+                            let url = url::Url::parse(line).ok()?;
+                            let path = url.to_file_path().ok()?;
+                            Some(path.to_string_lossy().into_owned())
+                        })
+                        .collect();
+                    read_paths_as_attachments(paths).await
+                });
+            }
+
             Message::ComposeSend => {
                 if self.compose_to.trim().is_empty() {
                     self.compose_error = Some("Recipient is required".into());
@@ -302,4 +348,32 @@ fn build_references(in_reply_to: Option<&str>, message_id: &str) -> String {
         Some(irt) => format!("{irt} {message_id}"),
         None => message_id.to_string(),
     }
+}
+
+/// Read a list of file paths into AttachmentData. Shared by portal and uri-list codepaths.
+async fn read_paths_as_attachments(paths: Vec<String>) -> Message {
+    let mut attachments = Vec::new();
+    for p in &paths {
+        let path = std::path::Path::new(p);
+        let data = match tokio::fs::read(path).await {
+            Ok(d) => d,
+            Err(e) => {
+                return Message::ComposeAttachLoaded(Err(format!(
+                    "Failed to read {}: {e}",
+                    path.display()
+                )));
+            }
+        };
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "attachment".into());
+        let mime_type = mime_from_ext(path).to_owned();
+        attachments.push(AttachmentData {
+            filename,
+            mime_type,
+            data,
+        });
+    }
+    Message::ComposeAttachLoaded(Ok(attachments))
 }

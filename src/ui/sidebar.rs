@@ -3,13 +3,14 @@ use cosmic::widget;
 use cosmic::Element;
 
 use crate::app::{ConnectionState, Message};
-use crate::core::models::Folder;
+use crate::core::models::{DraggedMessage, Folder};
 
 /// Render the folder sidebar.
 pub fn view<'a>(
     folders: &[Folder],
-    selected: Option<usize>,
+    _selected: Option<usize>,
     conn_state: &'a ConnectionState,
+    drag_target: Option<usize>,
 ) -> Element<'a, Message> {
     let mut col = widget::column().spacing(4).padding(8);
 
@@ -24,19 +25,37 @@ pub fn view<'a>(
         col = col.push(widget::text::body("No folders"));
     } else {
         for (i, folder) in folders.iter().enumerate() {
-            let _is_selected = selected == Some(i);
             let label = if folder.unread_count > 0 {
                 format!("{} ({})", folder.name, folder.unread_count)
             } else {
                 folder.name.clone()
             };
 
-            let btn = widget::button::text(label)
+            let is_drag_target = drag_target == Some(i);
+            let mut btn = widget::button::text(label)
                 .on_press(Message::SelectFolder(i))
                 .width(Length::Fill);
 
-            // TODO: Style differently when selected
-            col = col.push(btn);
+            if is_drag_target {
+                btn = btn.class(cosmic::theme::Button::Suggested);
+            }
+
+            let mailbox_hash = folder.mailbox_hash;
+            let dest = widget::dnd_destination::dnd_destination_for_data::<DraggedMessage, _>(
+                btn,
+                move |data, _action| match data {
+                    Some(msg) => Message::DragMessageToFolder {
+                        envelope_hash: msg.envelope_hash,
+                        source_mailbox: msg.source_mailbox,
+                        dest_mailbox: mailbox_hash,
+                    },
+                    None => Message::Noop,
+                },
+            )
+            .on_enter(move |_x, _y, _mimes| Message::FolderDragEnter(i))
+            .on_leave(|| Message::FolderDragLeave);
+
+            col = col.push(dest);
         }
     }
 

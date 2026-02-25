@@ -34,6 +34,7 @@ pub fn view<'a>(
     attachments: &[AttachmentData],
     error: Option<&'a str>,
     is_sending: bool,
+    drag_hover: bool,
 ) -> Element<'a, Message> {
     let title = match mode {
         ComposeMode::New => "New Message",
@@ -81,10 +82,16 @@ pub fn view<'a>(
                 .height(Length::Fixed(300.0)),
         );
 
-    // Attachment section
+    // Attachment section (visual only — actual DnD destination is in the main view
+    // because COSMIC dialog overlays don't propagate drag_destinations to the compositor)
     let mut attach_col = widget::column().spacing(6);
+    let attach_label = if drag_hover {
+        "Drop files to attach"
+    } else {
+        "Attach files"
+    };
     attach_col = attach_col.push(
-        widget::button::standard("Attach files").on_press(Message::ComposeAttach),
+        widget::button::standard(attach_label).on_press(Message::ComposeAttach),
     );
     if !attachments.is_empty() {
         for (i, att) in attachments.iter().enumerate() {

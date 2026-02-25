@@ -5,7 +5,7 @@ use cosmic::widget;
 use cosmic::Element;
 
 use crate::app::Message;
-use crate::core::models::MessageSummary;
+use crate::core::models::{DraggedMessage, MessageSummary};
 
 pub fn search_input_id() -> widget::Id {
     widget::Id::new("search-input")
@@ -88,7 +88,16 @@ pub fn view<'a>(
                 btn = btn.class(cosmic::theme::Button::Suggested);
             }
 
-            col = col.push(btn);
+            let env_hash = msg.envelope_hash;
+            let mbox_hash = msg.mailbox_hash;
+            let source = widget::dnd_source::<Message, DraggedMessage>(btn)
+                .drag_content(move || DraggedMessage {
+                    envelope_hash: env_hash,
+                    source_mailbox: mbox_hash,
+                })
+                .drag_threshold(8.0);
+
+            col = col.push(source);
         }
 
         if has_more {

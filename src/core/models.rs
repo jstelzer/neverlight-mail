@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
 use serde::{Deserialize, Serialize};
 
 /// A mail folder (IMAP mailbox).
@@ -43,6 +46,71 @@ impl AttachmentData {
         self.mime_type
             .to_ascii_lowercase()
             .starts_with("image/")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop data types
+// ---------------------------------------------------------------------------
+
+/// External file drop data (text/uri-list from file managers).
+#[derive(Debug, Clone)]
+pub struct DraggedFiles(pub String);
+
+impl AllowedMimeTypes for DraggedFiles {
+    fn allowed() -> Cow<'static, [String]> {
+        Cow::Owned(vec!["text/uri-list".to_string()])
+    }
+}
+
+impl TryFrom<(Vec<u8>, String)> for DraggedFiles {
+    type Error = String;
+    fn try_from((bytes, _mime): (Vec<u8>, String)) -> Result<Self, Self::Error> {
+        String::from_utf8(bytes)
+            .map(DraggedFiles)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Internal message drag data for message-to-folder moves.
+#[derive(Debug, Clone)]
+pub struct DraggedMessage {
+    pub envelope_hash: u64,
+    pub source_mailbox: u64,
+}
+
+const NEVERMAIL_MIME: &str = "application/x-nevermail-message";
+
+impl AsMimeTypes for DraggedMessage {
+    fn available(&self) -> Cow<'static, [String]> {
+        Cow::Owned(vec![NEVERMAIL_MIME.to_string()])
+    }
+
+    fn as_bytes(&self, mime_type: &str) -> Option<Cow<'static, [u8]>> {
+        if mime_type == NEVERMAIL_MIME {
+            let s = format!("{}:{}", self.envelope_hash, self.source_mailbox);
+            Some(Cow::Owned(s.into_bytes()))
+        } else {
+            None
+        }
+    }
+}
+
+impl AllowedMimeTypes for DraggedMessage {
+    fn allowed() -> Cow<'static, [String]> {
+        Cow::Owned(vec![NEVERMAIL_MIME.to_string()])
+    }
+}
+
+impl TryFrom<(Vec<u8>, String)> for DraggedMessage {
+    type Error = String;
+    fn try_from((bytes, _mime): (Vec<u8>, String)) -> Result<Self, Self::Error> {
+        let s = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+        let (a, b) = s.split_once(':').ok_or("missing ':' separator")?;
+        Ok(DraggedMessage {
+            envelope_hash: a.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
+            source_mailbox: b.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
+        })
     }
 }
 

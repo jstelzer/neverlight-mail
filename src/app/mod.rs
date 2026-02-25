@@ -19,7 +19,7 @@ use cosmic::Element;
 
 use crate::config::{Config, ConfigNeedsInput};
 use crate::core::imap::ImapSession;
-use crate::core::models::{AttachmentData, Folder, MessageSummary};
+use crate::core::models::{AttachmentData, DraggedFiles, Folder, MessageSummary};
 use crate::core::store::CacheHandle;
 use crate::ui::compose_dialog::ComposeMode;
 
@@ -83,6 +83,7 @@ pub struct AppModel {
     pub(super) compose_references: Option<String>,
     pub(super) compose_attachments: Vec<AttachmentData>,
     pub(super) compose_error: Option<String>,
+    pub(super) compose_drag_hover: bool,
     pub(super) is_sending: bool,
 
     // Setup dialog state
@@ -96,6 +97,9 @@ pub struct AppModel {
     pub(super) setup_password_visible: bool,
     pub(super) setup_email_addresses: String,
     pub(super) setup_error: Option<String>,
+
+    // DnD state
+    pub(super) folder_drag_target: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +154,11 @@ pub enum Message {
     ComposeAttach,
     ComposeAttachLoaded(Result<Vec<AttachmentData>, String>),
     ComposeRemoveAttachment(usize),
+    ComposeFilesDropped(DraggedFiles),
+    ComposeFileTransfer(String),
+    ComposeFileTransferResolved(Result<Vec<String>, String>),
+    ComposeDragEnter,
+    ComposeDragLeave,
     ComposeSend,
     ComposeCancel,
     SendComplete(Result<(), String>),
@@ -162,6 +171,15 @@ pub enum Message {
     SearchExecute,
     SearchResultsLoaded(Result<Vec<MessageSummary>, String>),
     SearchClear,
+
+    // Message-to-folder drag
+    DragMessageToFolder {
+        envelope_hash: u64,
+        source_mailbox: u64,
+        dest_mailbox: u64,
+    },
+    FolderDragEnter(usize),
+    FolderDragLeave,
 
     ForceReconnect,
     Refresh,
@@ -264,6 +282,7 @@ impl cosmic::Application for AppModel {
             compose_references: None,
             compose_attachments: Vec::new(),
             compose_error: None,
+            compose_drag_hover: false,
             is_sending: false,
 
             show_setup_dialog: false,
@@ -276,6 +295,8 @@ impl cosmic::Application for AppModel {
             setup_password_visible: false,
             setup_email_addresses: String::new(),
             setup_error: None,
+
+            folder_drag_target: None,
         };
 
         let title_task = app.set_window_title("Nevermail".into());
@@ -343,6 +364,7 @@ impl cosmic::Application for AppModel {
                 &self.compose_attachments,
                 self.compose_error.as_deref(),
                 self.is_sending,
+                self.compose_drag_hover,
             ));
         }
         None
@@ -455,7 +477,12 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let sidebar = crate::ui::sidebar::view(&self.folders, self.selected_folder, &self.conn_state);
+        let sidebar = crate::ui::sidebar::view(
+            &self.folders,
+            self.selected_folder,
+            &self.conn_state,
+            self.folder_drag_target,
+        );
         let message_list = crate::ui::message_list::view(
             &self.messages,
             &self.visible_indices,
@@ -498,11 +525,26 @@ impl cosmic::Application for AppModel {
             .padding([4, 8])
             .width(Length::Fill);
 
-        widget::column()
+        let content: Element<'_, Self::Message> = widget::column()
             .push(main_content)
             .push(status_bar)
             .height(Length::Fill)
-            .into()
+            .into();
+
+        // File drop destination lives in the main view (not the dialog overlay)
+        // because COSMIC dialog overlays don't register drag_destinations with
+        // the Wayland compositor. Drops are forwarded to compose when it's open.
+        widget::dnd_destination::dnd_destination_for_data::<DraggedFiles, _>(
+            content,
+            |data, _action| match data {
+                Some(files) => Message::ComposeFilesDropped(files),
+                None => Message::Noop,
+            },
+        )
+        .on_file_transfer(Message::ComposeFileTransfer)
+        .on_enter(|_x, _y, _mimes| Message::ComposeDragEnter)
+        .on_leave(|| Message::ComposeDragLeave)
+        .into()
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -518,6 +560,11 @@ impl cosmic::Application for AppModel {
             | Message::ComposeAttach
             | Message::ComposeAttachLoaded(_)
             | Message::ComposeRemoveAttachment(_)
+            | Message::ComposeFilesDropped(_)
+            | Message::ComposeFileTransfer(_)
+            | Message::ComposeFileTransferResolved(_)
+            | Message::ComposeDragEnter
+            | Message::ComposeDragLeave
             | Message::ComposeSend
             | Message::ComposeCancel
             | Message::SendComplete(_) => self.handle_compose(message),
@@ -557,6 +604,9 @@ impl cosmic::Application for AppModel {
             | Message::ToggleStar(_)
             | Message::Trash(_)
             | Message::Archive(_)
+            | Message::DragMessageToFolder { .. }
+            | Message::FolderDragEnter(_)
+            | Message::FolderDragLeave
             | Message::FlagOpComplete { .. }
             | Message::MoveOpComplete { .. } => self.handle_actions(message),
 

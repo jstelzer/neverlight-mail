@@ -114,55 +114,8 @@ impl AppModel {
                     if let Some(msg) = self.messages.get(index) {
                         let envelope_hash = msg.envelope_hash;
                         let source_mailbox = msg.mailbox_hash;
-
-                        // Optimistic: remove from list
-                        self.messages.remove(index);
-                        if let Some(sel) = &mut self.selected_message {
-                            if *sel >= self.messages.len() && !self.messages.is_empty() {
-                                *sel = self.messages.len() - 1;
-                            } else if self.messages.is_empty() {
-                                self.selected_message = None;
-                                self.preview_body.clear();
-                                self.preview_markdown.clear();
-                                self.preview_attachments.clear();
-                                self.preview_image_handles.clear();
-                            }
-                        }
-                        self.recompute_visible();
-
-                        let mut tasks: Vec<Task<Message>> = Vec::new();
-
-                        if let Some(cache) = &self.cache {
-                            let cache = cache.clone();
-                            let new_flags = store::flags_to_u8(true, false);
-                            tasks.push(cosmic::task::future(async move {
-                                if let Err(e) = cache.update_flags(envelope_hash, new_flags, format!("move:{}", trash_hash)).await {
-                                    log::warn!("Failed to update cache for trash: {}", e);
-                                }
-                                Message::Noop
-                            }));
-                        }
-
-                        if let Some(session) = &self.session {
-                            let session = session.clone();
-                            tasks.push(cosmic::task::future(async move {
-                                let result = session
-                                    .move_messages(
-                                        EnvelopeHash(envelope_hash),
-                                        MailboxHash(source_mailbox),
-                                        MailboxHash(trash_hash),
-                                    )
-                                    .await;
-                                Message::MoveOpComplete {
-                                    envelope_hash,
-                                    result,
-                                }
-                            }));
-                        }
-
-                        if !tasks.is_empty() {
-                            return cosmic::task::batch(tasks);
-                        }
+                        self.remove_message_optimistic(index);
+                        return self.dispatch_move(envelope_hash, source_mailbox, trash_hash);
                     }
                 } else {
                     self.status_message = "Trash folder not found".into();
@@ -174,59 +127,37 @@ impl AppModel {
                     if let Some(msg) = self.messages.get(index) {
                         let envelope_hash = msg.envelope_hash;
                         let source_mailbox = msg.mailbox_hash;
-
-                        // Optimistic: remove from list
-                        self.messages.remove(index);
-                        if let Some(sel) = &mut self.selected_message {
-                            if *sel >= self.messages.len() && !self.messages.is_empty() {
-                                *sel = self.messages.len() - 1;
-                            } else if self.messages.is_empty() {
-                                self.selected_message = None;
-                                self.preview_body.clear();
-                                self.preview_markdown.clear();
-                                self.preview_attachments.clear();
-                                self.preview_image_handles.clear();
-                            }
-                        }
-                        self.recompute_visible();
-
-                        let mut tasks: Vec<Task<Message>> = Vec::new();
-
-                        if let Some(cache) = &self.cache {
-                            let cache = cache.clone();
-                            let new_flags = store::flags_to_u8(true, false);
-                            tasks.push(cosmic::task::future(async move {
-                                if let Err(e) = cache.update_flags(envelope_hash, new_flags, format!("move:{}", archive_hash)).await {
-                                    log::warn!("Failed to update cache for archive: {}", e);
-                                }
-                                Message::Noop
-                            }));
-                        }
-
-                        if let Some(session) = &self.session {
-                            let session = session.clone();
-                            tasks.push(cosmic::task::future(async move {
-                                let result = session
-                                    .move_messages(
-                                        EnvelopeHash(envelope_hash),
-                                        MailboxHash(source_mailbox),
-                                        MailboxHash(archive_hash),
-                                    )
-                                    .await;
-                                Message::MoveOpComplete {
-                                    envelope_hash,
-                                    result,
-                                }
-                            }));
-                        }
-
-                        if !tasks.is_empty() {
-                            return cosmic::task::batch(tasks);
-                        }
+                        self.remove_message_optimistic(index);
+                        return self.dispatch_move(envelope_hash, source_mailbox, archive_hash);
                     }
                 } else {
                     self.status_message = "Archive folder not found".into();
                 }
+            }
+
+            Message::DragMessageToFolder {
+                envelope_hash,
+                source_mailbox,
+                dest_mailbox,
+            } => {
+                self.folder_drag_target = None;
+
+                // No-op if dragged onto the same folder
+                if source_mailbox == dest_mailbox {
+                    return Task::none();
+                }
+
+                if let Some(index) = self.messages.iter().position(|m| m.envelope_hash == envelope_hash) {
+                    self.remove_message_optimistic(index);
+                    return self.dispatch_move(envelope_hash, source_mailbox, dest_mailbox);
+                }
+            }
+
+            Message::FolderDragEnter(i) => {
+                self.folder_drag_target = Some(i);
+            }
+            Message::FolderDragLeave => {
+                self.folder_drag_target = None;
             }
 
             Message::FlagOpComplete {
@@ -295,5 +226,69 @@ impl AppModel {
             _ => {}
         }
         Task::none()
+    }
+
+    /// Optimistically remove a message from the list and adjust selection.
+    fn remove_message_optimistic(&mut self, index: usize) {
+        self.messages.remove(index);
+        if let Some(sel) = &mut self.selected_message {
+            if *sel >= self.messages.len() && !self.messages.is_empty() {
+                *sel = self.messages.len() - 1;
+            } else if self.messages.is_empty() {
+                self.selected_message = None;
+                self.preview_body.clear();
+                self.preview_markdown.clear();
+                self.preview_attachments.clear();
+                self.preview_image_handles.clear();
+            }
+        }
+        self.recompute_visible();
+    }
+
+    /// Dispatch IMAP move + cache update tasks for a message move operation.
+    fn dispatch_move(
+        &self,
+        envelope_hash: u64,
+        source_mailbox: u64,
+        dest_mailbox: u64,
+    ) -> Task<Message> {
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+
+        if let Some(cache) = &self.cache {
+            let cache = cache.clone();
+            let new_flags = store::flags_to_u8(true, false);
+            tasks.push(cosmic::task::future(async move {
+                if let Err(e) = cache
+                    .update_flags(envelope_hash, new_flags, format!("move:{}", dest_mailbox))
+                    .await
+                {
+                    log::warn!("Failed to update cache for move: {}", e);
+                }
+                Message::Noop
+            }));
+        }
+
+        if let Some(session) = &self.session {
+            let session = session.clone();
+            tasks.push(cosmic::task::future(async move {
+                let result = session
+                    .move_messages(
+                        EnvelopeHash(envelope_hash),
+                        MailboxHash(source_mailbox),
+                        MailboxHash(dest_mailbox),
+                    )
+                    .await;
+                Message::MoveOpComplete {
+                    envelope_hash,
+                    result,
+                }
+            }));
+        }
+
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            cosmic::task::batch(tasks)
+        }
     }
 }

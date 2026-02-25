@@ -44,6 +44,12 @@ keyring = { version = "3", features = ["sync-secret-service"] }
 # XDG directory resolution
 dirs = "6"
 
+# URI parsing (file:// URIs from drag-and-drop)
+url = "2"
+
+# XDG portal file transfer (drag-and-drop from file managers)
+ashpd = { version = "0.12", default-features = false, features = ["tokio"] }
+
 # Open URLs in browser
 open = "5"
 

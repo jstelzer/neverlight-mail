@@ -3902,6 +3902,7 @@ name = "nevermail"
 version = "0.1.0"
 dependencies = [
  "ammonia",
+ "ashpd 0.12.3",
  "dirs",
  "env_logger",
  "futures",
@@ -3919,6 +3920,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]
