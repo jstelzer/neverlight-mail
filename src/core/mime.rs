@@ -257,4 +257,73 @@ mod tests {
         let result = render_body_markdown(Some(real), Some("<p>HTML version</p>"));
         assert_eq!(result, real);
     }
+
+    // ── Real-world fixture: 1Password invoice ────────────────────
+    //
+    // Marketing HTML with nested layout tables, MSO conditionals,
+    // inline styles, tracking pixels — the kind of email that
+    // produced markdown soup before ammonia stripping.
+
+    const FIXTURE_PLAIN: &str =
+        include_str!("../../tests/fixtures/1password_invoice_plain.txt");
+    const FIXTURE_HTML: &str =
+        include_str!("../../tests/fixtures/1password_invoice_html.txt");
+
+    #[test]
+    fn invoice_plain_text_not_flagged_as_junk() {
+        // The plain part is a real invoice — should NOT be treated as junk
+        assert!(!plain_is_junk(FIXTURE_PLAIN));
+    }
+
+    #[test]
+    fn invoice_prefers_plain_over_html() {
+        let result = render_body_markdown(Some(FIXTURE_PLAIN), Some(FIXTURE_HTML));
+        // Should use plain text as-is, not the HTML path
+        assert_eq!(result, FIXTURE_PLAIN);
+    }
+
+    #[test]
+    fn invoice_html_renders_without_table_soup() {
+        // Force the HTML path by passing no plain text
+        let result = render_body_markdown(None, Some(FIXTURE_HTML));
+
+        // Should contain the actual invoice content
+        assert!(result.contains("63.44"));
+        assert!(result.contains("Families Plan"));
+
+        // Should NOT produce markdown table syntax from layout tables
+        // (the pre-ammonia bug: hundreds of | cells from nested <table>)
+        let pipe_count = result.matches('|').count();
+        assert!(
+            pipe_count < 10,
+            "too many pipe chars ({pipe_count}) — layout tables leaking as markdown tables"
+        );
+    }
+
+    #[test]
+    fn invoice_html_strips_styles_and_mso() {
+        let result = render_body_markdown(None, Some(FIXTURE_HTML));
+        // CSS and MSO conditionals should be gone
+        assert!(!result.contains("mso-table"));
+        assert!(!result.contains("border-collapse"));
+        assert!(!result.contains("background-color"));
+    }
+
+    #[test]
+    fn invoice_html_preserves_links() {
+        let result = render_body_markdown(None, Some(FIXTURE_HTML));
+        assert!(result.contains("testfamily.1password.com"));
+    }
+
+    #[test]
+    fn invoice_html_output_is_reasonable_size() {
+        let result = render_body_markdown(None, Some(FIXTURE_HTML));
+        // 1000 lines of marketing HTML should not explode into
+        // tens of thousands of chars of markdown
+        assert!(
+            result.len() < 5_000,
+            "output too large ({} bytes) — likely layout cruft leaking through",
+            result.len()
+        );
+    }
 }
