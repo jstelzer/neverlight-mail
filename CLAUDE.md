@@ -138,9 +138,23 @@ Key types and their locations in melib 0.8.13:
 - `BackendEventConsumer::new(Arc<dyn Fn(AccountHash, BackendEvent) + Send + Sync>)`
 - Hash types: `MailboxHash(pub u64)`, `EnvelopeHash(pub u64)` — transparent newtypes
 
+## Sharp Edges: Wayland / COSMIC DnD
+
+These are hard-won lessons. Do not re-learn them.
+
+**Dialog overlays don't support DnD.** COSMIC's `dialog()` renders as a modal overlay. Widgets inside overlays don't call `drag_destinations`, so `dnd_destination` widgets placed there are invisible to the Wayland compositor. Files snap back to the file manager with no error. Fix: DnD destinations must live in the main `view()`, never inside `dialog()`.
+
+**File managers use the xdg document portal, not `text/uri-list`.** On Wayland, dragged files arrive as `application/vnd.portal.filetransfer` with a transfer key. You must chain `.on_file_transfer()` on `dnd_destination` and resolve paths via `ashpd::documents::FileTransfer::retrieve_files(key)`. The `text/uri-list` codepath exists as fallback for X11/non-portal apps only.
+
+**Current DnD architecture:**
+- File drop `dnd_destination` wraps the entire `view()` output in `app/mod.rs`
+- Portal path: `ComposeFileTransfer(key)` → `ComposeFileTransferResolved(paths)` → `ComposeAttachLoaded`
+- URI-list fallback: `ComposeFilesDropped(DraggedFiles)` → parse → `ComposeAttachLoaded`
+- Message-to-folder: `dnd_source` on message rows, `dnd_destination` on sidebar folders (both in main view, works fine)
+- `actions.rs` has shared `remove_message_optimistic()` + `dispatch_move()` for Trash/Archive/DnD moves
+
 ## Known Limitations
 
 - **No offline compose** — requires active IMAP session for SMTP relay config
-- **No attachment upload** — compose is plain text only
 - **Move revert on failure** — trash/archive failures don't re-insert the optimistically removed message; a manual refresh restores state
 

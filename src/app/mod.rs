@@ -531,9 +531,14 @@ impl cosmic::Application for AppModel {
             .height(Length::Fill)
             .into();
 
-        // File drop destination lives in the main view (not the dialog overlay)
-        // because COSMIC dialog overlays don't register drag_destinations with
-        // the Wayland compositor. Drops are forwarded to compose when it's open.
+        // WARNING: DO NOT move this into dialog(). COSMIC dialog overlays don't
+        // register drag_destinations with the Wayland compositor — dnd_destination
+        // widgets inside dialogs are invisible to the compositor and drops silently
+        // fail (files snap back to file manager). This must live in view().
+        //
+        // Two codepaths:
+        //   on_file_transfer → portal key → ashpd resolve → paths (Wayland native)
+        //   on_finish         → text/uri-list → url parse   → paths (X11 fallback)
         widget::dnd_destination::dnd_destination_for_data::<DraggedFiles, _>(
             content,
             |data, _action| match data {
