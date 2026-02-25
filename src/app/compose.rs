@@ -228,19 +228,11 @@ impl AppModel {
             }
             Message::ComposeFilesDropped(DraggedFiles(uri_list)) => {
                 self.compose_drag_hover = false;
+                let paths = parse_uri_list(&uri_list);
+                if paths.is_empty() {
+                    return Task::none();
+                }
                 return cosmic::task::future(async move {
-                    let paths: Vec<String> = uri_list
-                        .lines()
-                        .filter_map(|line| {
-                            let line = line.trim();
-                            if line.is_empty() || line.starts_with('#') {
-                                return None;
-                            }
-                            let url = url::Url::parse(line).ok()?;
-                            let path = url.to_file_path().ok()?;
-                            Some(path.to_string_lossy().into_owned())
-                        })
-                        .collect();
                     read_paths_as_attachments(paths).await
                 });
             }
@@ -350,6 +342,23 @@ fn build_references(in_reply_to: Option<&str>, message_id: &str) -> String {
     }
 }
 
+/// Parse a text/uri-list string into local file paths.
+/// Skips blank lines, comments (lines starting with #), and non-file:// URIs.
+fn parse_uri_list(uri_list: &str) -> Vec<String> {
+    uri_list
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let url = url::Url::parse(line).ok()?;
+            let path = url.to_file_path().ok()?;
+            Some(path.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
 /// Read a list of file paths into AttachmentData. Shared by portal and uri-list codepaths.
 async fn read_paths_as_attachments(paths: Vec<String>) -> Message {
     let mut attachments = Vec::new();
@@ -376,4 +385,60 @@ async fn read_paths_as_attachments(paths: Vec<String>) -> Message {
         });
     }
     Message::ComposeAttachLoaded(Ok(attachments))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_uri_list_basic() {
+        let input = "file:///home/user/doc.pdf\nfile:///tmp/photo.jpg\n";
+        let paths = parse_uri_list(input);
+        assert_eq!(paths, vec!["/home/user/doc.pdf", "/tmp/photo.jpg"]);
+    }
+
+    #[test]
+    fn parse_uri_list_skips_comments_and_blanks() {
+        let input = "# this is a comment\n\nfile:///home/user/doc.pdf\n\n# another comment\n";
+        let paths = parse_uri_list(input);
+        assert_eq!(paths, vec!["/home/user/doc.pdf"]);
+    }
+
+    #[test]
+    fn parse_uri_list_skips_non_file_uris() {
+        let input = "https://example.com/file.pdf\nfile:///home/user/doc.pdf\n";
+        let paths = parse_uri_list(input);
+        assert_eq!(paths, vec!["/home/user/doc.pdf"]);
+    }
+
+    #[test]
+    fn parse_uri_list_handles_spaces_in_paths() {
+        let input = "file:///home/user/my%20documents/report.pdf\n";
+        let paths = parse_uri_list(input);
+        assert_eq!(paths, vec!["/home/user/my documents/report.pdf"]);
+    }
+
+    #[test]
+    fn parse_uri_list_empty_input() {
+        assert!(parse_uri_list("").is_empty());
+        assert!(parse_uri_list("   \n  \n").is_empty());
+    }
+
+    #[test]
+    fn parse_uri_list_trims_whitespace() {
+        let input = "  file:///home/user/doc.pdf  \n";
+        let paths = parse_uri_list(input);
+        assert_eq!(paths, vec!["/home/user/doc.pdf"]);
+    }
+
+    #[test]
+    fn mime_from_ext_common_types() {
+        assert_eq!(mime_from_ext(std::path::Path::new("file.pdf")), "application/pdf");
+        assert_eq!(mime_from_ext(std::path::Path::new("photo.jpg")), "image/jpeg");
+        assert_eq!(mime_from_ext(std::path::Path::new("photo.JPEG")), "image/jpeg");
+        assert_eq!(mime_from_ext(std::path::Path::new("doc.txt")), "text/plain");
+        assert_eq!(mime_from_ext(std::path::Path::new("unknown.xyz")), "application/octet-stream");
+        assert_eq!(mime_from_ext(std::path::Path::new("noext")), "application/octet-stream");
+    }
 }
