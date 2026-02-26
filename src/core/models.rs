@@ -19,6 +19,7 @@ pub struct MessageSummary {
     pub uid: u64,
     pub subject: String,
     pub from: String,
+    pub to: String,
     pub date: String,
     pub is_read: bool,
     pub is_starred: bool,

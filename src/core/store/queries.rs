@@ -9,7 +9,8 @@ use crate::core::models::{AttachmentData, Folder, MessageSummary};
 ///   0: envelope_hash, 1: subject, 2: sender, 3: date, 4: timestamp,
 ///   5: is_read, 6: is_starred, 7: has_attachments, 8: thread_id,
 ///   9: flags_server, 10: flags_local, 11: pending_op, 12: mailbox_hash,
-///   13: message_id, 14: in_reply_to, 15: thread_depth, 16: reply_to
+///   13: message_id, 14: in_reply_to, 15: thread_depth, 16: reply_to,
+///   17: recipient
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageSummary> {
     let envelope_hash: i64 = row.get(0)?;
     let thread_id: Option<i64> = row.get(8)?;
@@ -30,6 +31,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageSummary> {
         uid: envelope_hash as u64,
         subject: row.get(1)?,
         from: row.get(2)?,
+        to: row.get::<_, Option<String>>(17)?.unwrap_or_default(),
         date: row.get(3)?,
         timestamp: row.get(4)?,
         is_read,
@@ -203,8 +205,8 @@ pub(super) fn do_save_messages(
             "INSERT OR IGNORE INTO messages
              (envelope_hash, mailbox_hash, subject, sender, date, timestamp,
               is_read, is_starred, has_attachments, thread_id, flags_server, flags_local,
-              message_id, in_reply_to, thread_depth, reply_to)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+              message_id, in_reply_to, thread_depth, reply_to, recipient)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         )
         .map_err(|e| format!("Cache prepare error: {e}"))?;
 
@@ -213,8 +215,9 @@ pub(super) fn do_save_messages(
         .prepare(
             "UPDATE messages SET flags_server = ?1, subject = ?2, sender = ?3,
              date = ?4, timestamp = ?5, has_attachments = ?6, thread_id = ?7,
-             message_id = ?8, in_reply_to = ?9, thread_depth = ?10, reply_to = ?11
-             WHERE envelope_hash = ?12 AND pending_op IS NOT NULL",
+             message_id = ?8, in_reply_to = ?9, thread_depth = ?10, reply_to = ?11,
+             recipient = ?12
+             WHERE envelope_hash = ?13 AND pending_op IS NOT NULL",
         )
         .map_err(|e| format!("Cache prepare error: {e}"))?;
 
@@ -236,6 +239,7 @@ pub(super) fn do_save_messages(
                     m.in_reply_to,
                     m.thread_depth,
                     m.reply_to,
+                    m.to,
                     m.envelope_hash as i64,
                 ])
                 .map_err(|e| format!("Cache update error: {e}"))?;
@@ -258,6 +262,7 @@ pub(super) fn do_save_messages(
                 m.in_reply_to,
                 m.thread_depth,
                 m.reply_to,
+                m.to,
             ])
             .map_err(|e| format!("Cache insert error: {e}"))?;
         }
@@ -281,7 +286,7 @@ pub(super) fn do_load_messages(
             "SELECT envelope_hash, subject, sender, date, timestamp,
                     is_read, is_starred, has_attachments, thread_id,
                     flags_server, flags_local, pending_op, mailbox_hash,
-                    message_id, in_reply_to, thread_depth, reply_to
+                    message_id, in_reply_to, thread_depth, reply_to, recipient
              FROM messages
              WHERE mailbox_hash = ?1
              ORDER BY
@@ -507,7 +512,7 @@ pub(super) fn do_search(conn: &Connection, query: &str) -> Result<Vec<MessageSum
             "SELECT m.envelope_hash, m.subject, m.sender, m.date, m.timestamp,
                     m.is_read, m.is_starred, m.has_attachments, m.thread_id,
                     m.flags_server, m.flags_local, m.pending_op, m.mailbox_hash,
-                    m.message_id, m.in_reply_to, m.thread_depth, m.reply_to
+                    m.message_id, m.in_reply_to, m.thread_depth, m.reply_to, m.recipient
              FROM messages m
              WHERE m.rowid IN (SELECT rowid FROM message_fts WHERE message_fts MATCH ?1)
              ORDER BY m.timestamp DESC

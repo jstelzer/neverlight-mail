@@ -144,6 +144,9 @@ fn header_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
 fn message_header<'a>(msg: &'a MessageSummary) -> Element<'a, Message> {
     let mut col = widget::column().spacing(4);
     col = col.push(header_row("From:", &msg.from));
+    if !msg.to.is_empty() {
+        col = col.push(header_row("To:", &msg.to));
+    }
     col = col.push(header_row("Subject:", &msg.subject));
     col = col.push(header_row("Date:", &msg.date));
     if let Some(ref reply_to) = msg.reply_to {

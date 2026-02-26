@@ -49,6 +49,7 @@ pub(super) fn run_migrations(conn: &Connection) {
         "ALTER TABLE messages ADD COLUMN thread_depth INTEGER DEFAULT 0",
         "ALTER TABLE messages ADD COLUMN body_markdown TEXT",
         "ALTER TABLE messages ADD COLUMN reply_to TEXT",
+        "ALTER TABLE messages ADD COLUMN recipient TEXT",
     ];
     for sql in &alters {
         // "duplicate column name" is the expected error when already migrated

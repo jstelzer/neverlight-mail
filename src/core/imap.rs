@@ -163,6 +163,13 @@ impl ImapSession {
                     .collect::<Vec<_>>()
                     .join(", ");
 
+                let to_str = envelope
+                    .to()
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
                 let msg_id = envelope.message_id().to_string();
                 let refs = envelope.references();
                 let thread_id = Some(compute_thread_id(&msg_id, refs));
@@ -180,6 +187,7 @@ impl ImapSession {
                     uid: envelope.hash().0,
                     subject: envelope.subject().to_string(),
                     from: from_str,
+                    to: to_str,
                     date: envelope.date_as_str().to_string(),
                     is_read: envelope.is_seen(),
                     is_starred: envelope.flags().is_flagged(),
