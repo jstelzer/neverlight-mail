@@ -23,10 +23,8 @@ futures = "0.3"
 # SMTP sending (Phase 3)
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 
-# HTML rendering
-html2text = "0.16"
-ammonia = "4"
-html2md = "0.2"
+# HTML rendering (privacy-safe sanitization)
+html-safe-md = { path = "html-safe-md" }
 
 # Local cache
 rusqlite = { version = "0.37", features = ["bundled"] }
