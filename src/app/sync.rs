@@ -50,10 +50,26 @@ impl AppModel {
                 let count = messages.len();
                 self.has_more_messages = count as u32 == DEFAULT_PAGE_SIZE;
 
+                // Remember selected message by envelope_hash so we can restore
+                // selection after the list is replaced (e.g. on refresh).
+                let prev_hash = self.selected_message.and_then(|i| {
+                    self.messages.get(i).map(|m| m.envelope_hash)
+                });
+
                 if self.messages_offset == 0 {
                     self.messages = messages;
                 } else {
                     self.messages.extend(messages);
+                }
+
+                // Restore selection by envelope_hash
+                if self.messages_offset == 0 {
+                    if let Some(hash) = prev_hash {
+                        self.selected_message = self
+                            .messages
+                            .iter()
+                            .position(|m| m.envelope_hash == hash);
+                    }
                 }
 
                 self.recompute_visible();

@@ -10,6 +10,14 @@ Neverlight Mail is a COSMIC desktop email client built on:
 
 Target server: Runbox (mail.runbox.com:993, implicit TLS). Should work with any standard IMAP server.
 
+## Source of Truth
+
+Use this file for architecture and implementation context only.
+
+- User-facing behavior (features, setup, limitations): see [README.md](README.md)
+- Provider-specific guidance and caveats: see files under [`docs/`](docs/)
+- Prioritized backlog and implementation planning: see [BACKLOG.md](BACKLOG.md)
+
 ## Architecture
 
 - **neverlight-mail-core** — Headless email engine (zero COSMIC deps). Library crate.
@@ -114,18 +122,9 @@ Flag toggles and message moves apply immediately in the UI, then confirm with th
 ### MIME Body Extraction
 Walks the attachment tree recursively looking for text/plain and text/html parts. Uses `Attachment::decode(Default::default())` for content-transfer-encoding. Prefers text/plain; falls back to html2text on text/html.
 
-## Credentials (Phase 0)
+## Configuration and Credentials
 
-Environment variables, no UI prompt:
-```bash
-export NEVERLIGHT_MAIL_SERVER=mail.runbox.com
-export NEVERLIGHT_MAIL_PORT=993        # optional, default 993
-export NEVERLIGHT_MAIL_USER=you@runbox.com
-export NEVERLIGHT_MAIL_PASSWORD=yourpassword
-export NEVERLIGHT_MAIL_STARTTLS=false  # optional, default false (implicit TLS)
-```
-
-Config::from_env() panics with a helpful message if required vars are missing.
+For current setup flow, config behavior, keyring usage, and environment overrides, refer to [README.md](README.md). Keep this document focused on architecture decisions to avoid behavior drift.
 
 ## melib API Quick Reference
 
@@ -160,4 +159,3 @@ These are hard-won lessons. Do not re-learn them.
 ## Known Limitations
 
 - **No offline compose** — requires active IMAP session for SMTP relay config
-

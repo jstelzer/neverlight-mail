@@ -145,6 +145,8 @@ pub struct AppModel {
 
     /// Body view deferred until IMAP session is ready
     pub(super) pending_body: Option<usize>,
+    /// Retry count for deferred body fetches (prevents infinite loops)
+    pub(super) body_defer_retries: u8,
 
     /// Auto-mark-read: suppressed when user manually toggles back to unread
     pub(super) auto_read_suppressed: bool,
@@ -385,6 +387,7 @@ impl cosmic::Application for AppModel {
 
             folder_drag_target: None,
             pending_body: None,
+            body_defer_retries: 0,
             auto_read_suppressed: false,
 
             panes,

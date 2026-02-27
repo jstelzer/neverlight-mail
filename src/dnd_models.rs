@@ -57,8 +57,12 @@ impl TryFrom<(Vec<u8>, String)> for DraggedMessage {
         let s = String::from_utf8(bytes).map_err(|e| e.to_string())?;
         let (a, b) = s.split_once(':').ok_or("missing ':' separator")?;
         Ok(DraggedMessage {
-            envelope_hash: a.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
-            source_mailbox: b.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
+            envelope_hash: a
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?,
+            source_mailbox: b
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?,
         })
     }
 }

@@ -13,9 +13,7 @@ impl AppModel {
                 self.search_active = true;
                 self.search_focused = true;
                 self.search_query.clear();
-                return widget::text_input::focus(
-                    crate::ui::message_list::search_input_id(),
-                );
+                return widget::text_input::focus(crate::ui::message_list::search_input_id());
             }
             Message::SearchQueryChanged(q) => {
                 self.search_query = q;

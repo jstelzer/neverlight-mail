@@ -28,7 +28,12 @@ impl AppModel {
                 self.setup_mut().update(SetupInput::SetField(FieldId::Label, v));
             }
             Message::SetupServerChanged(v) => {
-                self.setup_mut().update(SetupInput::SetField(FieldId::Server, v));
+                let synced = self.setup().smtp_server_synced;
+                self.setup_mut().update(SetupInput::SetField(FieldId::Server, v.clone()));
+                if synced {
+                    self.setup_mut().update(SetupInput::SetField(FieldId::SmtpServer, v));
+                    self.setup_mut().smtp_server_synced = true; // re-set after SetField cleared it
+                }
             }
             Message::SetupPortChanged(v) => {
                 self.setup_mut().update(SetupInput::SetField(FieldId::Port, v));
@@ -238,6 +243,7 @@ impl AppModel {
             );
 
             controls = controls
+                .push(widget::text::body("Incoming Mail (IMAP)"))
                 .push(
                     widget::text_input("mail.example.com", &model.server)
                         .label("IMAP Server")
@@ -280,9 +286,9 @@ impl AppModel {
 
             // SMTP overrides section
             controls = controls
-                .push(widget::text::body("SMTP Settings (optional — defaults to IMAP)"))
+                .push(widget::text::body("Outgoing Mail (SMTP)"))
                 .push(
-                    widget::text_input("smtp.example.com", &model.smtp_server)
+                    widget::text_input("(same as IMAP server)", &model.smtp_server)
                         .label("SMTP Server")
                         .on_input(Message::SetupSmtpServerChanged),
                 )
@@ -292,13 +298,13 @@ impl AppModel {
                         .on_input(Message::SetupSmtpPortChanged),
                 )
                 .push(
-                    widget::text_input("smtp username", &model.smtp_username)
+                    widget::text_input("(same as above)", &model.smtp_username)
                         .label("SMTP Username")
                         .on_input(Message::SetupSmtpUsernameChanged),
                 )
                 .push(
                     widget::text_input::secure_input(
-                        "SMTP password (blank = use IMAP password)",
+                        "(same as above)",
                         &model.smtp_password,
                         None::<Message>,
                         true,

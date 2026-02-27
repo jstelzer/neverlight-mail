@@ -12,6 +12,7 @@ impl AppModel {
             Message::ViewBody(index) => {
                 self.selected_message = Some(index);
                 self.pending_body = None;
+                self.body_defer_retries = 0;
                 self.auto_read_suppressed = false;
 
                 // Schedule auto-mark-read after 5 seconds if unread
@@ -63,21 +64,30 @@ impl AppModel {
                                 let result = session
                                     .fetch_body(EnvelopeHash(envelope_hash))
                                     .await;
-                                if let Ok((ref md_body, ref plain_body, ref attachments)) = result {
-                                    if let Err(e) = cache
-                                        .save_body(
-                                            account_id.clone(),
-                                            envelope_hash,
-                                            md_body.clone(),
-                                            plain_body.clone(),
-                                            attachments.clone(),
-                                        )
-                                        .await
-                                    {
-                                        log::warn!("Failed to cache body: {}", e);
+                                match result {
+                                    Ok((ref md_body, ref plain_body, ref attachments)) => {
+                                        if let Err(e) = cache
+                                            .save_body(
+                                                account_id.clone(),
+                                                envelope_hash,
+                                                md_body.clone(),
+                                                plain_body.clone(),
+                                                attachments.clone(),
+                                            )
+                                            .await
+                                        {
+                                            log::warn!("Failed to cache body: {}", e);
+                                        }
+                                        Message::BodyLoaded(result)
                                     }
+                                    Err(ref e) if e.contains("not found") => {
+                                        // melib hasn't ingested this envelope yet
+                                        // (still syncing) — defer instead of erroring
+                                        log::debug!("Body fetch deferred (envelope not yet in melib): {}", e);
+                                        Message::BodyDeferred
+                                    }
+                                    Err(_) => Message::BodyLoaded(result),
                                 }
-                                Message::BodyLoaded(result)
                             } else {
                                 // Session not ready yet — signal deferral
                                 Message::BodyDeferred
@@ -109,10 +119,36 @@ impl AppModel {
             }
 
             Message::BodyDeferred => {
-                // Cache missed and session wasn't ready — defer until connected
+                // Cache missed and melib hasn't ingested the envelope yet.
+                // If sync already finished, retry after a short delay to give melib
+                // time to process. Otherwise defer until SyncMessagesComplete flushes.
                 if let Some(index) = self.selected_message {
-                    self.pending_body = Some(index);
-                    self.status_message = "Connecting...".into();
+                    const MAX_DEFER_RETRIES: u8 = 6;
+
+                    if self.body_defer_retries < MAX_DEFER_RETRIES
+                        && !self.is_busy()
+                        && self.active_session().is_some()
+                    {
+                        // Sync already completed — retry after a brief delay
+                        self.body_defer_retries += 1;
+                        self.status_message = "Loading message...".into();
+                        return cosmic::task::future(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            Message::ViewBody(index)
+                        });
+                    }
+
+                    if self.body_defer_retries >= MAX_DEFER_RETRIES {
+                        let msg = "Message body unavailable — try refreshing the folder";
+                        self.preview_markdown =
+                            cosmic::widget::markdown::parse(msg).collect();
+                        self.preview_body = msg.into();
+                        self.status_message = msg.into();
+                    } else {
+                        self.pending_body = Some(index);
+                        self.status_message =
+                            "Syncing — message will load when ready...".into();
+                    }
                 }
             }
 

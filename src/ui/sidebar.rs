@@ -168,8 +168,58 @@ pub fn view<'a>(
 
     let scrollable_folders = widget::scrollable(col).height(Length::Fill);
 
+    let status_pill = status_pill_view(accounts, active_account);
+
     widget::column()
         .push(scrollable_folders)
+        .push(status_pill)
         .height(Length::Fill)
         .into()
+}
+
+fn status_pill_view<'a>(
+    accounts: &'a [AccountState],
+    active_account: Option<usize>,
+) -> Element<'a, Message> {
+    // Pick the account to reflect: active account, or first account, or none
+    let acct = active_account
+        .and_then(|i| accounts.get(i))
+        .or_else(|| accounts.first());
+
+    let Some(acct) = acct else {
+        return widget::text::caption("No accounts").into();
+    };
+
+    let label = match &acct.conn_state {
+        ConnectionState::Connected => format!("● {}", acct.config.label),
+        ConnectionState::Connecting => format!("◌ {}  Connecting...", acct.config.label),
+        ConnectionState::Syncing => format!("◌ {}  Syncing...", acct.config.label),
+        ConnectionState::Error(msg) => {
+            let short = if msg.len() > 30 {
+                format!("{}...", &msg[..27])
+            } else {
+                msg.clone()
+            };
+            format!("✖ {}  {}", acct.config.label, short)
+        }
+        ConnectionState::Disconnected => format!("○ {}  Disconnected", acct.config.label),
+    };
+
+    let clickable = matches!(
+        acct.conn_state,
+        ConnectionState::Connected | ConnectionState::Error(_) | ConnectionState::Disconnected
+    );
+
+    let pill = widget::container(widget::text::caption(label)).padding([6, 8]);
+
+    if clickable {
+        let aid = acct.config.id.clone();
+        widget::button::custom(pill)
+            .on_press(Message::ForceReconnect(aid))
+            .class(cosmic::theme::Button::Text)
+            .width(Length::Fill)
+            .into()
+    } else {
+        pill.width(Length::Fill).into()
+    }
 }
