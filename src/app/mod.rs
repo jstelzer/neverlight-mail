@@ -108,6 +108,8 @@ pub struct AppModel {
     pub(super) visible_indices: Vec<usize>,
     /// Total messages per thread_id (for collapse indicators)
     pub(super) thread_sizes: HashMap<u64, usize>,
+    /// Snapshot of optimistically removed messages for move rollback.
+    pub(super) pending_move_restore: HashMap<u64, (MessageSummary, usize)>,
 
     pub(super) status_message: String,
 
@@ -186,6 +188,7 @@ pub enum Message {
     Archive(usize),
     FlagOpComplete {
         envelope_hash: u64,
+        prev_flags: u8,
         result: Result<u8, String>,
     },
     MoveOpComplete {
@@ -348,6 +351,7 @@ impl cosmic::Application for AppModel {
             collapsed_threads: HashSet::new(),
             visible_indices: Vec::new(),
             thread_sizes: HashMap::new(),
+            pending_move_restore: HashMap::new(),
             status_message: "Starting up...".into(),
 
             search_active: false,

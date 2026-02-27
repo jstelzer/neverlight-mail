@@ -105,6 +105,12 @@ SelectFolder(i) → fetch_messages(mailbox_hash)
 SelectMessage(i) → fetch_body(envelope_hash) → render via mime::render_body()
 ```
 
+### Optimistic Updates & Rollback
+Flag toggles and message moves apply immediately in the UI, then confirm with the server async. On failure the UI reverts:
+- **Flags:** `FlagOpComplete` carries `prev_flags` (compact 2-bit via `flags_to_u8`). Failure restores exact pre-op read+star state.
+- **Moves:** `remove_message_optimistic()` returns the removed `MessageSummary`; callers stash it in `pending_move_restore` keyed by envelope hash. `MoveOpComplete(Err)` re-inserts at the original index and repairs selection. Success clears the snapshot.
+- **Selection:** `remove_message_optimistic` decrements selection when the removed row was above, clamps when it was the selected row, and clears the preview pane only when needed.
+
 ### MIME Body Extraction
 Walks the attachment tree recursively looking for text/plain and text/html parts. Uses `Attachment::decode(Default::default())` for content-transfer-encoding. Prefers text/plain; falls back to html2text on text/html.
 
@@ -154,5 +160,4 @@ These are hard-won lessons. Do not re-learn them.
 ## Known Limitations
 
 - **No offline compose** — requires active IMAP session for SMTP relay config
-- **Move revert on failure** — trash/archive failures don't re-insert the optimistically removed message; a manual refresh restores state
 

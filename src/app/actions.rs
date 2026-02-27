@@ -9,6 +9,7 @@ impl AppModel {
         match message {
             Message::ToggleRead(index) => {
                 if let Some(msg) = self.messages.get_mut(index) {
+                    let prev_flags = store::flags_to_u8(msg.is_read, msg.is_starred);
                     let new_read = !msg.is_read;
                     msg.is_read = new_read;
                     let envelope_hash = msg.envelope_hash;
@@ -45,6 +46,7 @@ impl AppModel {
                                 .await;
                             Message::FlagOpComplete {
                                 envelope_hash,
+                                prev_flags,
                                 result: result.map(|_| new_flags),
                             }
                         }));
@@ -58,6 +60,7 @@ impl AppModel {
 
             Message::ToggleStar(index) => {
                 if let Some(msg) = self.messages.get_mut(index) {
+                    let prev_flags = store::flags_to_u8(msg.is_read, msg.is_starred);
                     let new_starred = !msg.is_starred;
                     msg.is_starred = new_starred;
                     let envelope_hash = msg.envelope_hash;
@@ -94,6 +97,7 @@ impl AppModel {
                                 .await;
                             Message::FlagOpComplete {
                                 envelope_hash,
+                                prev_flags,
                                 result: result.map(|_| new_flags),
                             }
                         }));
@@ -112,8 +116,11 @@ impl AppModel {
                         if let Some(trash_hash) = folder_map.get("Trash").or_else(|| folder_map.get("INBOX.Trash")).copied() {
                             let envelope_hash = msg.envelope_hash;
                             let source_mailbox = msg.mailbox_hash;
-                            self.remove_message_optimistic(index);
-                            return self.dispatch_move(envelope_hash, source_mailbox, trash_hash);
+                            if let Some(removed) = self.remove_message_optimistic(index) {
+                                self.pending_move_restore
+                                    .insert(envelope_hash, (removed, index));
+                                return self.dispatch_move(envelope_hash, source_mailbox, trash_hash);
+                            }
                         }
                     }
                     self.status_message = "Trash folder not found".into();
@@ -127,8 +134,11 @@ impl AppModel {
                         if let Some(archive_hash) = folder_map.get("Archive").or_else(|| folder_map.get("INBOX.Archive")).copied() {
                             let envelope_hash = msg.envelope_hash;
                             let source_mailbox = msg.mailbox_hash;
-                            self.remove_message_optimistic(index);
-                            return self.dispatch_move(envelope_hash, source_mailbox, archive_hash);
+                            if let Some(removed) = self.remove_message_optimistic(index) {
+                                self.pending_move_restore
+                                    .insert(envelope_hash, (removed, index));
+                                return self.dispatch_move(envelope_hash, source_mailbox, archive_hash);
+                            }
                         }
                     }
                     self.status_message = "Archive folder not found".into();
@@ -156,8 +166,11 @@ impl AppModel {
                 }
 
                 if let Some(index) = self.messages.iter().position(|m| m.envelope_hash == envelope_hash) {
-                    self.remove_message_optimistic(index);
-                    return self.dispatch_move(envelope_hash, source_mailbox, dest_mailbox);
+                    if let Some(removed) = self.remove_message_optimistic(index) {
+                        self.pending_move_restore
+                            .insert(envelope_hash, (removed, index));
+                        return self.dispatch_move(envelope_hash, source_mailbox, dest_mailbox);
+                    }
                 }
             }
 
@@ -170,6 +183,7 @@ impl AppModel {
 
             Message::FlagOpComplete {
                 envelope_hash,
+                prev_flags,
                 result,
             } => {
                 match result {
@@ -188,9 +202,11 @@ impl AppModel {
                         log::error!("Flag operation failed: {}", e);
                         self.status_message = format!("Flag update failed: {}", e);
 
-                        // Revert optimistic UI
+                        // Revert optimistic UI to exact pre-op flags.
                         if let Some(msg) = self.messages.iter_mut().find(|m| m.envelope_hash == envelope_hash) {
-                            msg.is_read = !msg.is_read; // toggle back
+                            let (is_read, is_starred) = store::flags_from_u8(prev_flags);
+                            msg.is_read = is_read;
+                            msg.is_starred = is_starred;
                         }
 
                         if let Some(cache) = &self.cache {
@@ -212,6 +228,7 @@ impl AppModel {
             } => {
                 match result {
                     Ok(()) => {
+                        self.pending_move_restore.remove(&envelope_hash);
                         if let Some(cache) = &self.cache {
                             let cache = cache.clone();
                             return cosmic::task::future(async move {
@@ -223,6 +240,14 @@ impl AppModel {
                         }
                     }
                     Err(e) => {
+                        if let Some((msg, original_index)) =
+                            self.pending_move_restore.remove(&envelope_hash)
+                        {
+                            let insert_at = original_index.min(self.messages.len());
+                            self.messages.insert(insert_at, msg);
+                            self.selected_message = Some(insert_at);
+                            self.recompute_visible();
+                        }
                         log::error!("Move operation failed: {}", e);
                         self.status_message = format!("Move failed: {}", e);
                     }
@@ -235,20 +260,31 @@ impl AppModel {
     }
 
     /// Optimistically remove a message from the list and adjust selection.
-    fn remove_message_optimistic(&mut self, index: usize) {
-        self.messages.remove(index);
-        if let Some(sel) = &mut self.selected_message {
-            if *sel >= self.messages.len() && !self.messages.is_empty() {
-                *sel = self.messages.len() - 1;
-            } else if self.messages.is_empty() {
-                self.selected_message = None;
+    fn remove_message_optimistic(&mut self, index: usize) -> Option<neverlight_mail_core::models::MessageSummary> {
+        if index >= self.messages.len() {
+            return None;
+        }
+
+        let removed = self.messages.remove(index);
+        match self.selected_message {
+            Some(sel) if sel == index => {
+                self.selected_message = if self.messages.is_empty() {
+                    None
+                } else {
+                    Some(index.min(self.messages.len() - 1))
+                };
                 self.preview_body.clear();
                 self.preview_markdown.clear();
                 self.preview_attachments.clear();
                 self.preview_image_handles.clear();
             }
+            Some(sel) if sel > index => {
+                self.selected_message = Some(sel - 1);
+            }
+            _ => {}
         }
         self.recompute_visible();
+        Some(removed)
     }
 
     /// Dispatch IMAP move + cache update tasks for a message move operation.
