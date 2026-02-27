@@ -13,6 +13,21 @@ pub enum ComposeMode {
     Forward,
 }
 
+pub struct ComposeViewState<'a> {
+    pub mode: &'a ComposeMode,
+    pub account_labels: &'a [String],
+    pub selected_account: usize,
+    pub from_addresses: &'a [String],
+    pub from_selected: usize,
+    pub to: &'a str,
+    pub subject: &'a str,
+    pub body: &'a text_editor::Content,
+    pub attachments: &'a [AttachmentData],
+    pub error: Option<&'a str>,
+    pub is_sending: bool,
+    pub drag_hover: bool,
+}
+
 fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
@@ -23,21 +38,22 @@ fn format_size(bytes: usize) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn view<'a>(
-    mode: &ComposeMode,
-    account_labels: &'a [String],
-    selected_account: usize,
-    from_addresses: &'a [String],
-    from_selected: usize,
-    to: &'a str,
-    subject: &'a str,
-    body: &'a text_editor::Content,
-    attachments: &[AttachmentData],
-    error: Option<&'a str>,
-    is_sending: bool,
-    drag_hover: bool,
-) -> Element<'a, Message> {
+pub fn view<'a>(state: ComposeViewState<'a>) -> Element<'a, Message> {
+    let ComposeViewState {
+        mode,
+        account_labels,
+        selected_account,
+        from_addresses,
+        from_selected,
+        to,
+        subject,
+        body,
+        attachments,
+        error,
+        is_sending,
+        drag_hover,
+    } = state;
+
     let title = match mode {
         ComposeMode::New => "New Message",
         ComposeMode::Reply => "Reply",
@@ -106,9 +122,8 @@ pub fn view<'a>(
     } else {
         "Attach files"
     };
-    attach_col = attach_col.push(
-        widget::button::standard(attach_label).on_press(Message::ComposeAttach),
-    );
+    attach_col =
+        attach_col.push(widget::button::standard(attach_label).on_press(Message::ComposeAttach));
     if !attachments.is_empty() {
         for (i, att) in attachments.iter().enumerate() {
             let label = format!("{} ({})", att.filename, format_size(att.data.len()));

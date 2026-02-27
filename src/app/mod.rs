@@ -432,18 +432,20 @@ impl cosmic::Application for AppModel {
         }
         if self.show_compose_dialog {
             return Some(crate::ui::compose_dialog::view(
-                &self.compose_mode,
-                &self.compose_account_labels,
-                self.compose_account,
-                &self.compose_cached_from,
-                self.compose_from,
-                &self.compose_to,
-                &self.compose_subject,
-                &self.compose_body,
-                &self.compose_attachments,
-                self.compose_error.as_deref(),
-                self.is_sending,
-                self.compose_drag_hover,
+                crate::ui::compose_dialog::ComposeViewState {
+                    mode: &self.compose_mode,
+                    account_labels: &self.compose_account_labels,
+                    selected_account: self.compose_account,
+                    from_addresses: &self.compose_cached_from,
+                    from_selected: self.compose_from,
+                    to: &self.compose_to,
+                    subject: &self.compose_subject,
+                    body: &self.compose_body,
+                    attachments: &self.compose_attachments,
+                    error: self.compose_error.as_deref(),
+                    is_sending: self.is_sending,
+                    drag_hover: self.compose_drag_hover,
+                },
             ));
         }
         None
@@ -573,14 +575,16 @@ impl cosmic::Application for AppModel {
                     self.folder_drag_target,
                 ),
                 PaneKind::MessageList => crate::ui::message_list::view(
-                    &self.messages,
-                    &self.visible_indices,
-                    self.selected_message,
-                    self.has_more_messages && !self.search_active,
-                    &self.collapsed_threads,
-                    &self.thread_sizes,
-                    self.search_active,
-                    &self.search_query,
+                    crate::ui::message_list::MessageListState {
+                        messages: &self.messages,
+                        visible_indices: &self.visible_indices,
+                        selected: self.selected_message,
+                        has_more: self.has_more_messages && !self.search_active,
+                        collapsed_threads: &self.collapsed_threads,
+                        thread_sizes: &self.thread_sizes,
+                        search_active: self.search_active,
+                        search_query: &self.search_query,
+                    },
                 ),
                 PaneKind::MessageView => {
                     let selected_msg = self.selected_message.and_then(|i| {

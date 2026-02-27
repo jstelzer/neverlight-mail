@@ -9,22 +9,33 @@ use neverlight_mail_core::models::MessageSummary;
 
 use crate::dnd_models::DraggedMessage;
 
+pub struct MessageListState<'a> {
+    pub messages: &'a [MessageSummary],
+    pub visible_indices: &'a [usize],
+    pub selected: Option<usize>,
+    pub has_more: bool,
+    pub collapsed_threads: &'a HashSet<u64>,
+    pub thread_sizes: &'a HashMap<u64, usize>,
+    pub search_active: bool,
+    pub search_query: &'a str,
+}
+
 pub fn search_input_id() -> widget::Id {
     widget::Id::new("search-input")
 }
 
 /// Render the message list for the selected folder.
-#[allow(clippy::too_many_arguments)]
-pub fn view<'a>(
-    messages: &'a [MessageSummary],
-    visible_indices: &[usize],
-    selected: Option<usize>, // real index into messages
-    has_more: bool,
-    collapsed_threads: &HashSet<u64>,
-    thread_sizes: &HashMap<u64, usize>,
-    search_active: bool,
-    search_query: &'a str,
-) -> Element<'a, Message> {
+pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
+    let MessageListState {
+        messages,
+        visible_indices,
+        selected,
+        has_more,
+        collapsed_threads,
+        thread_sizes,
+        search_active,
+        search_query,
+    } = state;
     let mut col = widget::column().spacing(2).padding(8);
 
     if search_active {
