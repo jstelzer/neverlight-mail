@@ -7,36 +7,49 @@ use neverlight_mail_core::config::{
     SmtpOverrides, new_account_id,
 };
 use neverlight_mail_core::imap::ImapSession;
+use neverlight_mail_core::setup::{self, FieldId, SetupInput, SetupRequest};
 
 use super::{AccountState, AppModel, ConnectionState, Message};
 
 impl AppModel {
+    /// Access the setup model, panicking if absent. Only call when you've
+    /// already checked `self.setup_model.is_some()`.
+    fn setup(&self) -> &setup::SetupModel {
+        self.setup_model.as_ref().expect("setup_model is None")
+    }
+    fn setup_mut(&mut self) -> &mut setup::SetupModel {
+        self.setup_model.as_mut().expect("setup_model is None")
+    }
+
     pub(super) fn handle_setup(&mut self, message: Message) -> Task<Message> {
         match message {
+            // Core IMAP fields → SetupModel
             Message::SetupLabelChanged(v) => {
-                self.setup_label = v;
+                self.setup_mut().update(SetupInput::SetField(FieldId::Label, v));
             }
             Message::SetupServerChanged(v) => {
-                self.setup_server = v;
+                self.setup_mut().update(SetupInput::SetField(FieldId::Server, v));
             }
             Message::SetupPortChanged(v) => {
-                self.setup_port = v;
+                self.setup_mut().update(SetupInput::SetField(FieldId::Port, v));
             }
             Message::SetupUsernameChanged(v) => {
-                self.setup_username = v;
+                self.setup_mut().update(SetupInput::SetField(FieldId::Username, v));
             }
             Message::SetupPasswordChanged(v) => {
-                self.setup_password = v;
+                self.setup_mut().update(SetupInput::SetField(FieldId::Password, v));
             }
             Message::SetupStarttlsToggled(v) => {
-                self.setup_starttls = v;
+                self.setup_mut().update(SetupInput::SetToggle(FieldId::Starttls, v));
             }
             Message::SetupPasswordVisibilityToggled => {
                 self.setup_password_visible = !self.setup_password_visible;
             }
+            // Email addresses stay COSMIC-local (comma-separated string → Vec on submit)
             Message::SetupEmailAddressesChanged(v) => {
                 self.setup_email_addresses = v;
             }
+            // SMTP overrides stay COSMIC-local
             Message::SetupSmtpServerChanged(v) => {
                 self.setup_smtp_server = v;
             }
@@ -54,52 +67,50 @@ impl AppModel {
             }
 
             Message::SetupSubmit => {
-                // Validate
-                if self.setup_server.trim().is_empty()
-                    || self.setup_username.trim().is_empty()
-                    || self.setup_password.is_empty()
-                {
-                    self.setup_error = Some("All fields are required".into());
+                // Validate core fields via SetupModel
+                if let Some(err) = self.setup().validate() {
+                    self.setup_mut().error = Some(err);
                     return Task::none();
                 }
-                let port: u16 = match self.setup_port.trim().parse() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        self.setup_error = Some("Port must be a number (e.g. 993)".into());
-                        return Task::none();
-                    }
-                };
 
+                let is_password_only = matches!(
+                    self.setup().request,
+                    SetupRequest::PasswordOnly { .. }
+                );
+
+                // Validate email addresses (COSMIC-local field, not in core model)
                 let email_addresses: Vec<String> = self
                     .setup_email_addresses
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                if !self.password_only_mode && email_addresses.is_empty() {
-                    self.setup_error =
+                if !is_password_only && email_addresses.is_empty() {
+                    self.setup_mut().error =
                         Some("At least one email address is required for sending".into());
                     return Task::none();
                 }
 
-                let server = self.setup_server.trim().to_string();
-                let username = self.setup_username.trim().to_string();
-                let password = self.setup_password.clone();
-                let starttls = self.setup_starttls;
-                let label = if self.setup_label.trim().is_empty() {
+                // Extract validated values from SetupModel
+                let server = self.setup().server.trim().to_string();
+                let username = self.setup().username.trim().to_string();
+                let password = self.setup().password.clone();
+                let starttls = self.setup().starttls;
+                let port: u16 = self.setup().port.trim().parse().unwrap(); // validated above
+                let label = if self.setup().label.trim().is_empty() {
                     username.clone()
                 } else {
-                    self.setup_label.trim().to_string()
+                    self.setup().label.trim().to_string()
                 };
 
-                // Determine account ID (new or editing)
-                let account_id = self
-                    .setup_editing_account
-                    .clone()
-                    .unwrap_or_else(new_account_id);
+                // Determine account ID from request
+                let account_id = match &self.setup().request {
+                    SetupRequest::Edit { account_id } => account_id.clone(),
+                    SetupRequest::PasswordOnly { account_id, .. } => account_id.clone(),
+                    SetupRequest::Full => new_account_id(),
+                };
 
-                // Build SMTP overrides
-                // Store SMTP password in keyring if provided
+                // Build SMTP overrides (COSMIC-local fields)
                 let smtp_password_backend = if !self.setup_smtp_password.is_empty() {
                     match neverlight_mail_core::keyring::set_smtp_password(&account_id, &self.setup_smtp_password) {
                         Ok(()) => {
@@ -133,20 +144,8 @@ impl AppModel {
                     use_starttls: Some(self.setup_smtp_starttls),
                 };
 
-                // Try keyring first; fall back to plaintext on failure
-                let password_backend =
-                    match neverlight_mail_core::keyring::set_password(&username, &server, &password) {
-                        Ok(()) => {
-                            log::info!("Password stored in keyring");
-                            PasswordBackend::Keyring
-                        }
-                        Err(e) => {
-                            log::warn!("Keyring unavailable ({}), using plaintext", e);
-                            PasswordBackend::Plaintext {
-                                value: password.clone(),
-                            }
-                        }
-                    };
+                // Store IMAP password via shared helper
+                let password_backend = setup::store_password(&username, &server, &password);
 
                 // Build file account config
                 let fac = FileAccountConfig {
@@ -174,7 +173,7 @@ impl AppModel {
                 }
                 if let Err(e) = multi.save() {
                     log::error!("Failed to save config: {}", e);
-                    self.setup_error = Some(format!("Failed to save config: {e}"));
+                    self.setup_mut().error = Some(format!("Failed to save config: {e}"));
                     return Task::none();
                 }
 
@@ -212,10 +211,8 @@ impl AppModel {
                     self.accounts.push(acct);
                 }
 
-                self.show_setup_dialog = false;
-                self.setup_password.clear();
+                self.setup_model = None;
                 self.setup_smtp_password.clear();
-                self.setup_error = None;
                 self.status_message = format!("{}: Connecting...", label);
 
                 let aid = account_id.clone();
@@ -226,7 +223,7 @@ impl AppModel {
             }
 
             Message::SetupCancel => {
-                self.show_setup_dialog = false;
+                self.setup_model = None;
                 if self.accounts.is_empty() {
                     self.status_message = "Not connected — no cached data".into();
                 } else {
@@ -241,31 +238,32 @@ impl AppModel {
     }
 
     pub(super) fn setup_dialog(&self) -> Element<'_, Message> {
+        let model = self.setup();
         let mut controls = widget::column().spacing(12);
 
-        let is_edit = self.setup_editing_account.is_some();
-        let title = if is_edit { "Edit Account" } else if self.password_only_mode { "Enter Password" } else { "Account Setup" };
+        let title = model.title();
+        let is_password_only = matches!(model.request, SetupRequest::PasswordOnly { .. });
 
-        if !self.password_only_mode {
+        if !is_password_only {
             controls = controls.push(
-                widget::text_input("Account name (e.g. Work)", &self.setup_label)
+                widget::text_input("Account name (e.g. Work)", &model.label)
                     .label("Label")
                     .on_input(Message::SetupLabelChanged),
             );
 
             controls = controls
                 .push(
-                    widget::text_input("mail.example.com", &self.setup_server)
+                    widget::text_input("mail.example.com", &model.server)
                         .label("IMAP Server")
                         .on_input(Message::SetupServerChanged),
                 )
                 .push(
-                    widget::text_input("993", &self.setup_port)
+                    widget::text_input("993", &model.port)
                         .label("Port")
                         .on_input(Message::SetupPortChanged),
                 )
                 .push(
-                    widget::text_input("you@example.com", &self.setup_username)
+                    widget::text_input("you@example.com", &model.username)
                         .label("Username")
                         .on_input(Message::SetupUsernameChanged),
                 );
@@ -274,7 +272,7 @@ impl AppModel {
         controls = controls.push(
             widget::text_input::secure_input(
                 "Password",
-                &self.setup_password,
+                &model.password,
                 Some(Message::SetupPasswordVisibilityToggled),
                 !self.setup_password_visible,
             )
@@ -282,7 +280,7 @@ impl AppModel {
             .on_input(Message::SetupPasswordChanged),
         );
 
-        if !self.password_only_mode {
+        if !is_password_only {
             controls = controls
                 .push(
                     widget::text_input("you@example.com, alias@example.com", &self.setup_email_addresses)
@@ -291,7 +289,7 @@ impl AppModel {
                 )
                 .push(
                     widget::settings::item::builder("Use STARTTLS")
-                        .toggler(self.setup_starttls, Message::SetupStarttlsToggled),
+                        .toggler(model.starttls, Message::SetupStarttlsToggled),
                 );
 
             // SMTP overrides section
@@ -338,7 +336,7 @@ impl AppModel {
                 widget::button::standard("Cancel").on_press(Message::SetupCancel),
             );
 
-        if let Some(ref err) = self.setup_error {
+        if let Some(ref err) = model.error {
             dialog = dialog.body(err.as_str());
         }
 

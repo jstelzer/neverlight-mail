@@ -7,7 +7,7 @@ impl AppModel {
     pub(super) fn handle_search(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SearchActivate => {
-                if self.show_setup_dialog || self.show_compose_dialog || self.search_focused {
+                if self.setup_model.is_some() || self.show_compose_dialog || self.search_focused {
                     return Task::none();
                 }
                 self.search_active = true;

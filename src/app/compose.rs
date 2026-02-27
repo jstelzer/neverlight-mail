@@ -49,7 +49,7 @@ impl AppModel {
     pub(super) fn handle_compose(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ComposeNew => {
-                if self.show_setup_dialog || self.show_compose_dialog {
+                if self.setup_model.is_some() || self.show_compose_dialog {
                     return Task::none();
                 }
                 self.compose_mode = ComposeMode::New;
@@ -68,7 +68,7 @@ impl AppModel {
             }
 
             Message::ComposeReply => {
-                if self.show_setup_dialog || self.show_compose_dialog {
+                if self.setup_model.is_some() || self.show_compose_dialog {
                     return Task::none();
                 }
                 if let Some(index) = self.selected_message {
@@ -105,7 +105,7 @@ impl AppModel {
             }
 
             Message::ComposeForward => {
-                if self.show_setup_dialog || self.show_compose_dialog {
+                if self.setup_model.is_some() || self.show_compose_dialog {
                     return Task::none();
                 }
                 if let Some(index) = self.selected_message {

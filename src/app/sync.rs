@@ -114,11 +114,13 @@ impl AppModel {
                     let has_folders = !self.accounts[idx].folders.is_empty();
                     let label = &self.accounts[idx].config.label;
 
-                    if !has_folders && !self.show_setup_dialog && self.accounts.len() == 1 {
+                    if !has_folders && self.setup_model.is_none() && self.accounts.len() == 1 {
                         // Single account, no cached data — re-show with error
-                        self.show_setup_dialog = true;
-                        self.password_only_mode = false;
-                        self.setup_error = Some(format!("Connection failed: {e}"));
+                        let mut model = neverlight_mail_core::setup::SetupModel::from_config_needs(
+                            &neverlight_mail_core::config::ConfigNeedsInput::FullSetup,
+                        );
+                        model.error = Some(format!("Connection failed: {e}"));
+                        self.setup_model = Some(model);
                     }
 
                     if !has_folders {

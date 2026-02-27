@@ -18,6 +18,7 @@ use cosmic::widget::{image, markdown, pane_grid, text_editor};
 use cosmic::Element;
 
 use neverlight_mail_core::config::{AccountConfig, AccountId, ConfigNeedsInput, LayoutConfig};
+use neverlight_mail_core::setup::SetupModel;
 use neverlight_mail_core::imap::ImapSession;
 use neverlight_mail_core::models::{AttachmentData, Folder, MessageSummary};
 use neverlight_mail_core::store::CacheHandle;
@@ -133,20 +134,11 @@ pub struct AppModel {
     pub(super) compose_account_labels: Vec<String>,
     pub(super) compose_cached_from: Vec<String>,
 
-    // Setup dialog state
-    pub(super) show_setup_dialog: bool,
-    pub(super) password_only_mode: bool,
-    pub(super) setup_label: String,
-    pub(super) setup_server: String,
-    pub(super) setup_port: String,
-    pub(super) setup_username: String,
-    pub(super) setup_password: String,
-    pub(super) setup_starttls: bool,
+    // Setup dialog state — core fields live in SetupModel, SMTP/visibility are local
+    pub(super) setup_model: Option<SetupModel>,
     pub(super) setup_password_visible: bool,
     pub(super) setup_email_addresses: String,
-    pub(super) setup_error: Option<String>,
-    pub(super) setup_editing_account: Option<AccountId>,
-    // SMTP override fields
+    // SMTP override fields (COSMIC-only, not in TUI)
     pub(super) setup_smtp_server: String,
     pub(super) setup_smtp_port: String,
     pub(super) setup_smtp_username: String,
@@ -385,18 +377,9 @@ impl cosmic::Application for AppModel {
             compose_account_labels: Vec::new(),
             compose_cached_from: Vec::new(),
 
-            show_setup_dialog: false,
-            password_only_mode: false,
-            setup_label: String::new(),
-            setup_server: String::new(),
-            setup_port: "993".into(),
-            setup_username: String::new(),
-            setup_password: String::new(),
-            setup_starttls: false,
+            setup_model: None,
             setup_password_visible: false,
             setup_email_addresses: String::new(),
-            setup_error: None,
-            setup_editing_account: None,
             setup_smtp_server: String::new(),
             setup_smtp_port: "587".into(),
             setup_smtp_username: String::new(),
@@ -439,31 +422,17 @@ impl cosmic::Application for AppModel {
                     }));
                 }
                 if app.accounts.is_empty() {
-                    app.show_setup_dialog = true;
-                    app.password_only_mode = false;
+                    app.setup_model = Some(SetupModel::from_config_needs(&ConfigNeedsInput::FullSetup));
                     app.status_message = "Setup required — enter your account details".into();
                 }
             }
-            Err(ConfigNeedsInput::FullSetup) => {
-                app.show_setup_dialog = true;
-                app.password_only_mode = false;
-                app.status_message = "Setup required — enter your account details".into();
-            }
-            Err(ConfigNeedsInput::PasswordOnly {
-                server,
-                port,
-                username,
-                starttls,
-                error,
-            }) => {
-                app.show_setup_dialog = true;
-                app.password_only_mode = true;
-                app.setup_server = server;
-                app.setup_port = port.to_string();
-                app.setup_username = username;
-                app.setup_starttls = starttls;
-                app.setup_error = error;
-                app.status_message = "Password required".into();
+            Err(ref needs) => {
+                let status = match needs {
+                    ConfigNeedsInput::FullSetup => "Setup required — enter your account details",
+                    ConfigNeedsInput::PasswordOnly { .. } => "Password required",
+                };
+                app.setup_model = Some(SetupModel::from_config_needs(needs));
+                app.status_message = status.into();
             }
         }
 
@@ -471,7 +440,7 @@ impl cosmic::Application for AppModel {
     }
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
-        if self.show_setup_dialog {
+        if self.setup_model.is_some() {
             return Some(self.setup_dialog());
         }
         if self.show_compose_dialog {
@@ -854,43 +823,36 @@ impl AppModel {
     fn handle_account_management(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::AccountAdd => {
-                self.setup_editing_account = None;
-                self.setup_label.clear();
-                self.setup_server.clear();
-                self.setup_port = "993".into();
-                self.setup_username.clear();
-                self.setup_password.clear();
-                self.setup_starttls = false;
+                self.setup_model = Some(SetupModel::from_config_needs(&ConfigNeedsInput::FullSetup));
                 self.setup_password_visible = false;
                 self.setup_email_addresses.clear();
-                self.setup_error = None;
                 self.setup_smtp_server.clear();
                 self.setup_smtp_port = "587".into();
                 self.setup_smtp_username.clear();
                 self.setup_smtp_password.clear();
                 self.setup_smtp_starttls = true;
-                self.password_only_mode = false;
-                self.show_setup_dialog = true;
             }
             Message::AccountEdit(ref id) => {
                 if let Some(acct) = self.accounts.iter().find(|a| &a.config.id == id) {
-                    self.setup_editing_account = Some(id.clone());
-                    self.setup_label = acct.config.label.clone();
-                    self.setup_server = acct.config.imap_server.clone();
-                    self.setup_port = acct.config.imap_port.to_string();
-                    self.setup_username = acct.config.username.clone();
-                    self.setup_password.clear(); // Don't pre-fill password
-                    self.setup_starttls = acct.config.use_starttls;
+                    use neverlight_mail_core::setup::SetupFields;
+                    self.setup_model = Some(SetupModel::for_edit(
+                        id.clone(),
+                        SetupFields {
+                            label: acct.config.label.clone(),
+                            server: acct.config.imap_server.clone(),
+                            port: acct.config.imap_port.to_string(),
+                            username: acct.config.username.clone(),
+                            email: acct.config.email_addresses.join(", "),
+                            starttls: acct.config.use_starttls,
+                        },
+                    ));
                     self.setup_password_visible = false;
                     self.setup_email_addresses = acct.config.email_addresses.join(", ");
-                    self.setup_error = None;
                     self.setup_smtp_server = acct.config.smtp_overrides.server.clone().unwrap_or_default();
                     self.setup_smtp_port = acct.config.smtp_overrides.port.map(|p| p.to_string()).unwrap_or_else(|| "587".into());
                     self.setup_smtp_username = acct.config.smtp_overrides.username.clone().unwrap_or_default();
                     self.setup_smtp_password.clear();
                     self.setup_smtp_starttls = acct.config.smtp_overrides.use_starttls.unwrap_or(true);
-                    self.password_only_mode = false;
-                    self.show_setup_dialog = true;
                 }
             }
             Message::AccountRemove(ref id) => {
