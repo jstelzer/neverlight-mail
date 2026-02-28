@@ -24,7 +24,8 @@
       "Bash(gh run:*)",
       "Bash(rustc:*)",
       "Bash(cargo metadata:*)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(wc:*)"
     ]
   }
 }

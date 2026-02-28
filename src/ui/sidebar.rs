@@ -44,10 +44,7 @@ pub fn view<'a>(
                 ConnectionState::Disconnected => "○",
             };
 
-            let header_label = format!(
-                "{} {} {}",
-                collapse_icon, acct.config.label, status_icon
-            );
+            let header_label = format!("{} {} {}", collapse_icon, acct.config.label, status_icon);
 
             let aid_edit = acct.config.id.clone();
             let aid_remove = acct.config.id.clone();
@@ -85,9 +82,8 @@ pub fn view<'a>(
                 let aid = acct.config.id.clone();
                 col = col.push(
                     widget::button::custom(
-                        widget::container(
-                            widget::text::caption(format!("  {short_err} (retry)"))
-                        ).padding([2, 8])
+                        widget::container(widget::text::caption(format!("  {short_err} (retry)")))
+                            .padding([2, 8]),
                     )
                     .on_press(Message::ForceReconnect(aid))
                     .class(cosmic::theme::Button::Text)
@@ -129,20 +125,19 @@ pub fn view<'a>(
                         }
 
                         let mailbox_hash = folder.mailbox_hash;
-                        let dest =
-                            widget::dnd_destination::dnd_destination_for_data::<DraggedMessage, _>(
-                                btn,
-                                move |data, _action| match data {
-                                    Some(msg) => Message::DragMessageToFolder {
-                                        envelope_hash: msg.envelope_hash,
-                                        source_mailbox: msg.source_mailbox,
-                                        dest_mailbox: mailbox_hash,
-                                    },
-                                    None => Message::Noop,
-                                },
-                            )
-                            .on_enter(move |_x, _y, _mimes| Message::FolderDragEnter(global_idx))
-                            .on_leave(|| Message::FolderDragLeave);
+                        let dest = widget::dnd_destination::dnd_destination_for_data::<
+                            DraggedMessage,
+                            _,
+                        >(btn, move |data, _action| match data {
+                            Some(msg) => Message::DragMessageToFolder {
+                                envelope_hash: msg.envelope_hash,
+                                source_mailbox: msg.source_mailbox,
+                                dest_mailbox: mailbox_hash,
+                            },
+                            None => Message::Noop,
+                        })
+                        .on_enter(move |_x, _y, _mimes| Message::FolderDragEnter(global_idx))
+                        .on_leave(|| Message::FolderDragLeave);
 
                         col = col.push(dest);
                     }
