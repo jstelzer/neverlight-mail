@@ -6,6 +6,7 @@ use neverlight_mail_core::store::DEFAULT_PAGE_SIZE;
 
 use super::{AppModel, ConnectionState, Message, Phase};
 
+#[allow(clippy::too_many_arguments)]
 fn should_apply_cached_messages(
     current_epoch: u64,
     incoming_epoch: u64,
@@ -258,15 +259,15 @@ impl AppModel {
                     return Task::none();
                 }
                 let mut refresh_completed = false;
-                if self.refresh_in_flight {
-                    if mark_refresh_account_complete(
+                if self.refresh_in_flight
+                    && mark_refresh_account_complete(
                         &mut self.refresh_accounts_outstanding,
                         account_id.as_str(),
-                    ) {
-                        self.refresh_in_flight = false;
-                        self.phase = Phase::Idle;
-                        refresh_completed = true;
-                    }
+                    )
+                {
+                    self.refresh_in_flight = false;
+                    self.phase = Phase::Idle;
+                    refresh_completed = true;
                 }
                 if let Some(idx) = self.account_index(&account_id) {
                     self.accounts[idx].folders = folders;
@@ -386,16 +387,16 @@ impl AppModel {
                     }
                     log::error!("Folder sync failed for '{}': {}", label, e);
                     self.phase = Phase::Error;
-                    if self.refresh_in_flight {
-                        if mark_refresh_account_complete(
+                    if self.refresh_in_flight
+                        && mark_refresh_account_complete(
                             &mut self.refresh_accounts_outstanding,
                             account_id.as_str(),
-                        ) {
-                            self.refresh_in_flight = false;
-                            if self.refresh_pending {
-                                self.refresh_pending = false;
-                                return self.dispatch(Message::Refresh);
-                            }
+                        )
+                    {
+                        self.refresh_in_flight = false;
+                        if self.refresh_pending {
+                            self.refresh_pending = false;
+                            return self.dispatch(Message::Refresh);
                         }
                     }
                 }

@@ -399,7 +399,7 @@ impl AppModel {
                                 let result = session
                                     .fetch_messages(MailboxHash(source_mailbox))
                                     .await
-                                    .and_then(|messages| {
+                                    .map(|messages| {
                                         let contains = messages
                                             .iter()
                                             .any(|m| m.envelope_hash == envelope_hash);
@@ -422,7 +422,7 @@ impl AppModel {
                                                 }
                                             });
                                         }
-                                        Ok(!contains)
+                                        !contains
                                     });
                                 Message::MovePostconditionChecked {
                                     envelope_hash,
