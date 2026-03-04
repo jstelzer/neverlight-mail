@@ -49,6 +49,9 @@ impl AppModel {
                             if let Some(fi) = self.accounts[idx].folders.iter().position(|f| f.path == "INBOX") {
                                 self.active_account = Some(idx);
                                 self.selected_folder = Some(fi);
+                                self.selected_mailbox_hash =
+                                    Some(self.accounts[idx].folders[fi].mailbox_hash);
+                                self.selected_folder_evicted = false;
                                 let mailbox_hash = self.accounts[idx].folders[fi].mailbox_hash;
                                 if let Some(cache) = &self.cache {
                                     let cache = cache.clone();
@@ -91,6 +94,7 @@ impl AppModel {
                             "{} folders (cached)",
                             self.accounts[idx].folders.len()
                         );
+                        self.revalidate_selected_folder();
                     }
                 }
             }
@@ -283,6 +287,9 @@ impl AppModel {
                     if self.active_account == Some(idx) && self.selected_folder.is_none() {
                         if let Some(fi) = self.accounts[idx].folders.iter().position(|f| f.path == "INBOX") {
                             self.selected_folder = Some(fi);
+                            self.selected_mailbox_hash =
+                                Some(self.accounts[idx].folders[fi].mailbox_hash);
+                            self.selected_folder_evicted = false;
                         }
                     }
                     // If no active account yet, select this one
@@ -290,8 +297,12 @@ impl AppModel {
                         self.active_account = Some(idx);
                         if let Some(fi) = self.accounts[idx].folders.iter().position(|f| f.path == "INBOX") {
                             self.selected_folder = Some(fi);
+                            self.selected_mailbox_hash =
+                                Some(self.accounts[idx].folders[fi].mailbox_hash);
+                            self.selected_folder_evicted = false;
                         }
                     }
+                    self.revalidate_selected_folder();
 
                     // If this is the active account, sync the selected folder's messages
                     if self.active_account == Some(idx) {
@@ -512,6 +523,12 @@ impl AppModel {
             Message::SelectFolder(acct_idx, folder_idx) => {
                 self.active_account = Some(acct_idx);
                 self.selected_folder = Some(folder_idx);
+                self.selected_mailbox_hash = self
+                    .accounts
+                    .get(acct_idx)
+                    .and_then(|acct| acct.folders.get(folder_idx))
+                    .map(|f| f.mailbox_hash);
+                self.selected_folder_evicted = false;
                 if let Some(handle) = self.folder_abort.take() {
                     handle.abort();
                 }

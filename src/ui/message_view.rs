@@ -43,7 +43,7 @@ pub fn view<'a>(
             .push(widget::button::text(read_label).on_press(Message::ToggleRead(index)))
             .push(widget::button::text("Archive").on_press(Message::Archive(index)))
             .push(widget::button::text("Copy").on_press(Message::CopyBody))
-            .push(widget::button::destructive("Trash").on_press(Message::Trash(index)));
+            .push(widget::button::destructive("Trash").on_press(Message::Delete(index)));
 
         col = col.push(
             widget::container(toolbar)

@@ -41,6 +41,26 @@ pub enum Phase {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagIntentKind {
+    ToggleRead,
+    ToggleStar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingFlagIntent {
+    pub envelope_hash: u64,
+    pub mailbox_hash: u64,
+    pub kind: FlagIntentKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingMoveIntent {
+    pub envelope_hash: u64,
+    pub source_mailbox: u64,
+    pub dest_mailbox: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Per-account state
 // ---------------------------------------------------------------------------
@@ -88,6 +108,8 @@ pub struct AppModel {
     pub(super) cache: Option<CacheHandle>,
 
     pub(super) selected_folder: Option<usize>,
+    pub(super) selected_mailbox_hash: Option<u64>,
+    pub(super) selected_folder_evicted: bool,
 
     pub(super) messages: Vec<MessageSummary>,
     pub(super) selected_message: Option<usize>,
@@ -115,6 +137,7 @@ pub struct AppModel {
     pub(super) search_abort: Option<AbortHandle>,
     pub(super) folder_abort: Option<AbortHandle>,
     pub(super) message_abort: Option<AbortHandle>,
+    pub(super) body_abort: Option<AbortHandle>,
 
     pub(super) status_message: String,
     pub(super) phase: Phase,
@@ -125,10 +148,15 @@ pub struct AppModel {
     pub(super) refresh_epoch: u64,
     pub(super) mutation_epoch: u64,
     pub(super) flag_epoch: u64,
+    pub(super) body_epoch: u64,
     /// Refresh lane coalescing state.
     pub(super) refresh_in_flight: bool,
     pub(super) refresh_pending: bool,
     pub(super) refresh_accounts_outstanding: HashSet<AccountId>,
+    pub(super) mutation_in_flight: bool,
+    pub(super) flag_in_flight: bool,
+    pub(super) pending_move_intent: Option<PendingMoveIntent>,
+    pub(super) pending_flag_intent: Option<PendingFlagIntent>,
     /// Diagnostics counters.
     pub(super) stale_apply_drop_count: u64,
     pub(super) toc_drift_count: u64,
@@ -186,8 +214,15 @@ pub enum Message {
     SelectFolder(usize, usize), // (account_idx, folder_idx)
 
     ViewBody(usize),
-    BodyDeferred,
-    BodyLoaded(Result<(String, String, Vec<AttachmentData>), String>),
+    BodyDeferred {
+        envelope_hash: u64,
+        epoch: u64,
+    },
+    BodyLoaded {
+        envelope_hash: u64,
+        epoch: u64,
+        result: Result<(String, String, Vec<AttachmentData>), String>,
+    },
     LinkClicked(markdown::Url),
     CopyBody,
 
@@ -222,8 +257,11 @@ pub enum Message {
     // Flag/move actions
     ToggleRead(usize),
     ToggleStar(usize),
+    Delete(usize),
     Trash(usize),
     Archive(usize),
+    RunFlagIntent(PendingFlagIntent),
+    RunMoveIntent(PendingMoveIntent),
     FlagOpComplete {
         envelope_hash: u64,
         epoch: u64,

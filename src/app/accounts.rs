@@ -5,11 +5,85 @@ use cosmic::app::Task;
 
 use neverlight_mail_core::config::ConfigNeedsInput;
 use neverlight_mail_core::imap::ImapSession;
+use neverlight_mail_core::models::Folder;
 use neverlight_mail_core::setup::SetupModel;
 
-use super::{AppModel, Message};
+use super::{AppModel, Message, Phase};
+
+fn revalidated_selected_folder_index(
+    selected_mailbox_hash: Option<u64>,
+    selected_folder_index: Option<usize>,
+    folders: &[Folder],
+) -> (Option<usize>, Option<u64>, bool) {
+    let canonical_hash = selected_mailbox_hash
+        .or_else(|| selected_folder_index.and_then(|idx| folders.get(idx).map(|f| f.mailbox_hash)));
+    let Some(hash) = canonical_hash else {
+        return (selected_folder_index, None, false);
+    };
+    if let Some(folder_idx) = folders.iter().position(|f| f.mailbox_hash == hash) {
+        return (Some(folder_idx), Some(hash), false);
+    }
+    (None, None, true)
+}
 
 impl AppModel {
+    fn clear_selected_folder_projection(&mut self) {
+        self.messages.clear();
+        self.selected_message = None;
+        self.messages_offset = 0;
+        self.has_more_messages = false;
+        self.pending_body = None;
+        self.preview_body.clear();
+        self.preview_markdown.clear();
+        self.preview_attachments.clear();
+        self.preview_image_handles.clear();
+        self.collapsed_threads.clear();
+        self.recompute_visible();
+    }
+
+    /// Keep selected folder anchored to canonical mailbox hash after any folder snapshot apply.
+    pub(super) fn revalidate_selected_folder(&mut self) {
+        let Some(active_idx) = self.active_account else {
+            self.selected_folder = None;
+            self.selected_mailbox_hash = None;
+            self.selected_folder_evicted = false;
+            return;
+        };
+        let Some(active) = self.accounts.get(active_idx) else {
+            self.selected_folder = None;
+            self.selected_mailbox_hash = None;
+            self.selected_folder_evicted = true;
+            self.clear_selected_folder_projection();
+            self.status_message = "Selected folder evicted (account missing)".into();
+            self.phase = Phase::Idle;
+            return;
+        };
+
+        let canonical_hash = self.selected_mailbox_hash.or_else(|| {
+            self.selected_folder
+                .and_then(|fi| active.folders.get(fi))
+                .map(|f| f.mailbox_hash)
+        });
+
+        let Some(hash) = canonical_hash else {
+            self.selected_folder_evicted = false;
+            return;
+        };
+        let (folder_idx, mailbox_hash, evicted) = revalidated_selected_folder_index(
+            Some(hash),
+            self.selected_folder,
+            &active.folders,
+        );
+        self.selected_folder = folder_idx;
+        self.selected_mailbox_hash = mailbox_hash;
+        self.selected_folder_evicted = evicted;
+        if evicted {
+            self.clear_selected_folder_projection();
+            self.status_message = "Selected folder no longer exists; selection cleared".into();
+            self.phase = Phase::Idle;
+        }
+    }
+
     /// Find the account index that owns a given mailbox_hash.
     pub(super) fn account_for_mailbox(&self, mailbox_hash: u64) -> Option<usize> {
         self.accounts.iter().position(|a| {
@@ -98,12 +172,13 @@ impl AppModel {
                     if let Some(active) = self.active_account {
                         if active == idx {
                             self.active_account = None;
-                            self.messages.clear();
                             self.selected_folder = None;
-                            self.preview_body.clear();
-                            self.preview_markdown.clear();
+                            self.selected_mailbox_hash = None;
+                            self.selected_folder_evicted = false;
+                            self.clear_selected_folder_projection();
                         } else if active > idx {
                             self.active_account = Some(active - 1);
+                            self.revalidate_selected_folder();
                         }
                     }
                     // Save updated config
@@ -163,5 +238,48 @@ impl AppModel {
 
         let config = MultiAccountFileConfig { accounts };
         config.save()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revalidated_selected_folder_index;
+    use neverlight_mail_core::models::Folder;
+
+    fn folder(mailbox_hash: u64, name: &str) -> Folder {
+        Folder {
+            mailbox_hash,
+            path: name.to_string(),
+            name: name.to_string(),
+            unread_count: 0,
+            total_count: 0,
+        }
+    }
+
+    #[test]
+    fn revalidation_keeps_selection_when_mailbox_still_exists() {
+        let folders = vec![folder(11, "INBOX"), folder(22, "Archive")];
+        let (idx, hash, evicted) = revalidated_selected_folder_index(Some(22), Some(0), &folders);
+        assert_eq!(idx, Some(1));
+        assert_eq!(hash, Some(22));
+        assert!(!evicted);
+    }
+
+    #[test]
+    fn revalidation_evicts_selection_when_mailbox_missing() {
+        let folders = vec![folder(11, "INBOX"), folder(33, "Sent")];
+        let (idx, hash, evicted) = revalidated_selected_folder_index(Some(22), Some(0), &folders);
+        assert_eq!(idx, None);
+        assert_eq!(hash, None);
+        assert!(evicted);
+    }
+
+    #[test]
+    fn revalidation_derives_hash_from_index_when_hash_not_set() {
+        let folders = vec![folder(11, "INBOX"), folder(22, "Archive")];
+        let (idx, hash, evicted) = revalidated_selected_folder_index(None, Some(1), &folders);
+        assert_eq!(idx, Some(1));
+        assert_eq!(hash, Some(22));
+        assert!(!evicted);
     }
 }

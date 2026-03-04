@@ -2,9 +2,20 @@ use std::path::PathBuf;
 
 use cosmic::app::Task;
 use cosmic::widget::{image, markdown};
+use futures::future::{AbortHandle, Abortable};
 use neverlight_mail_core::EnvelopeHash;
 
 use super::{AppModel, Message};
+
+fn should_apply_body_result(
+    current_epoch: u64,
+    incoming_epoch: u64,
+    current_selected_envelope_hash: Option<u64>,
+    incoming_envelope_hash: u64,
+) -> bool {
+    current_epoch == incoming_epoch
+        && current_selected_envelope_hash == Some(incoming_envelope_hash)
+}
 
 impl AppModel {
     pub(super) fn handle_body(&mut self, message: Message) -> Task<Message> {
@@ -14,6 +25,13 @@ impl AppModel {
                 self.pending_body = None;
                 self.body_defer_retries = 0;
                 self.auto_read_suppressed = false;
+                self.body_epoch = self.body_epoch.saturating_add(1);
+                let body_epoch = self.body_epoch;
+                if let Some(handle) = self.body_abort.take() {
+                    handle.abort();
+                }
+                let (abort_handle, abort_reg) = AbortHandle::new_pair();
+                self.body_abort = Some(abort_handle);
 
                 // Schedule auto-mark-read after 5 seconds if unread
                 let auto_read_task = if self
@@ -52,45 +70,70 @@ impl AppModel {
                             .or_else(|| self.active_session());
                         self.status_message = "Loading message...".into();
                         cosmic::task::future(async move {
-                            // Unified cache-first: try cache (includes attachments)
-                            if let Ok(Some((md_body, plain_body, attachments))) =
-                                cache.load_body(account_id.clone(), envelope_hash).await
-                            {
-                                return Message::BodyLoaded(Ok((md_body, plain_body, attachments)));
-                            }
-
-                            // Cache miss: fetch from IMAP, save to cache
-                            if let Some(session) = session {
-                                let result = session
-                                    .fetch_body(EnvelopeHash(envelope_hash))
-                                    .await;
-                                match result {
-                                    Ok((ref md_body, ref plain_body, ref attachments)) => {
-                                        if let Err(e) = cache
-                                            .save_body(
-                                                account_id.clone(),
-                                                envelope_hash,
-                                                md_body.clone(),
-                                                plain_body.clone(),
-                                                attachments.clone(),
-                                            )
-                                            .await
-                                        {
-                                            log::warn!("Failed to cache body: {}", e);
-                                        }
-                                        Message::BodyLoaded(result)
-                                    }
-                                    Err(ref e) if e.contains("not found") => {
-                                        // melib hasn't ingested this envelope yet
-                                        // (still syncing) — defer instead of erroring
-                                        log::debug!("Body fetch deferred (envelope not yet in melib): {}", e);
-                                        Message::BodyDeferred
-                                    }
-                                    Err(_) => Message::BodyLoaded(result),
+                            let load = async move {
+                                // Unified cache-first: try cache (includes attachments)
+                                if let Ok(Some((md_body, plain_body, attachments))) =
+                                    cache.load_body(account_id.clone(), envelope_hash).await
+                                {
+                                    return Message::BodyLoaded {
+                                        envelope_hash,
+                                        epoch: body_epoch,
+                                        result: Ok((md_body, plain_body, attachments)),
+                                    };
                                 }
-                            } else {
-                                // Session not ready yet — signal deferral
-                                Message::BodyDeferred
+
+                                // Cache miss: fetch from IMAP, save to cache
+                                if let Some(session) = session {
+                                    let result = session
+                                        .fetch_body(EnvelopeHash(envelope_hash))
+                                        .await;
+                                    match result {
+                                        Ok((ref md_body, ref plain_body, ref attachments)) => {
+                                            if let Err(e) = cache
+                                                .save_body(
+                                                    account_id.clone(),
+                                                    envelope_hash,
+                                                    md_body.clone(),
+                                                    plain_body.clone(),
+                                                    attachments.clone(),
+                                                )
+                                                .await
+                                            {
+                                                log::warn!("Failed to cache body: {}", e);
+                                            }
+                                            Message::BodyLoaded {
+                                                envelope_hash,
+                                                epoch: body_epoch,
+                                                result,
+                                            }
+                                        }
+                                        Err(ref e) if e.contains("not found") => {
+                                            // melib hasn't ingested this envelope yet
+                                            // (still syncing) — defer instead of erroring
+                                            log::debug!("Body fetch deferred (envelope not yet in melib): {}", e);
+                                            Message::BodyDeferred {
+                                                envelope_hash,
+                                                epoch: body_epoch,
+                                            }
+                                        }
+                                        Err(_) => Message::BodyLoaded {
+                                            envelope_hash,
+                                            epoch: body_epoch,
+                                            result,
+                                        },
+                                    }
+                                } else {
+                                    // Session not ready yet — signal deferral
+                                    Message::BodyDeferred {
+                                        envelope_hash,
+                                        epoch: body_epoch,
+                                    }
+                                }
+                            };
+
+                            match Abortable::new(load, abort_reg).await {
+                                Ok(message) => message,
+                                Err(_) => Message::Noop,
                             }
                         })
                     } else {
@@ -100,9 +143,17 @@ impl AppModel {
                         if let Some(session) = session {
                             self.status_message = "Loading message...".into();
                             cosmic::task::future(async move {
-                                Message::BodyLoaded(
-                                    session.fetch_body(EnvelopeHash(envelope_hash)).await,
-                                )
+                                let load = async move {
+                                    Message::BodyLoaded {
+                                        envelope_hash,
+                                        epoch: body_epoch,
+                                        result: session.fetch_body(EnvelopeHash(envelope_hash)).await,
+                                    }
+                                };
+                                match Abortable::new(load, abort_reg).await {
+                                    Ok(message) => message,
+                                    Err(_) => Message::Noop,
+                                }
                             })
                         } else {
                             // No cache, no session — defer until connected
@@ -118,7 +169,16 @@ impl AppModel {
                 return cosmic::task::batch(vec![body_task, auto_read_task]);
             }
 
-            Message::BodyDeferred => {
+            Message::BodyDeferred { envelope_hash, epoch } => {
+                let current_hash = self
+                    .selected_message
+                    .and_then(|i| self.messages.get(i))
+                    .map(|m| m.envelope_hash);
+                if !should_apply_body_result(self.body_epoch, epoch, current_hash, envelope_hash) {
+                    self.stale_apply_drop_count = self.stale_apply_drop_count.saturating_add(1);
+                    return Task::none();
+                }
+                self.body_abort = None;
                 // Cache missed and melib hasn't ingested the envelope yet.
                 // If sync already finished, retry after a short delay to give melib
                 // time to process. Otherwise defer until SyncMessagesComplete flushes.
@@ -152,7 +212,20 @@ impl AppModel {
                 }
             }
 
-            Message::BodyLoaded(Ok((markdown_body, plain_body, attachments))) => {
+            Message::BodyLoaded {
+                envelope_hash,
+                epoch,
+                result: Ok((markdown_body, plain_body, attachments)),
+            } => {
+                let current_hash = self
+                    .selected_message
+                    .and_then(|i| self.messages.get(i))
+                    .map(|m| m.envelope_hash);
+                if !should_apply_body_result(self.body_epoch, epoch, current_hash, envelope_hash) {
+                    self.stale_apply_drop_count = self.stale_apply_drop_count.saturating_add(1);
+                    return Task::none();
+                }
+                self.body_abort = None;
                 // Safety net: if clean_email_html still produces too many items
                 // (the markdown widget has no virtualization), fall back to plain text.
                 const MAX_MD_ITEMS: usize = 200;
@@ -189,7 +262,20 @@ impl AppModel {
                 self.preview_attachments = attachments;
                 self.status_message = "Ready".into();
             }
-            Message::BodyLoaded(Err(e)) => {
+            Message::BodyLoaded {
+                envelope_hash,
+                epoch,
+                result: Err(e),
+            } => {
+                let current_hash = self
+                    .selected_message
+                    .and_then(|i| self.messages.get(i))
+                    .map(|m| m.envelope_hash);
+                if !should_apply_body_result(self.body_epoch, epoch, current_hash, envelope_hash) {
+                    self.stale_apply_drop_count = self.stale_apply_drop_count.saturating_add(1);
+                    return Task::none();
+                }
+                self.body_abort = None;
                 // If still syncing, melib's store may not have the envelope yet.
                 // Defer the fetch instead of showing an error.
                 if self.is_busy() {
@@ -248,5 +334,26 @@ impl AppModel {
             _ => {}
         }
         Task::none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_apply_body_result;
+
+    #[test]
+    fn body_result_applies_when_epoch_and_selected_message_match() {
+        assert!(should_apply_body_result(7, 7, Some(42), 42));
+    }
+
+    #[test]
+    fn body_result_drops_when_epoch_is_stale() {
+        assert!(!should_apply_body_result(8, 7, Some(42), 42));
+    }
+
+    #[test]
+    fn body_result_drops_when_selection_has_switched() {
+        assert!(!should_apply_body_result(7, 7, Some(99), 42));
+        assert!(!should_apply_body_result(7, 7, None, 42));
     }
 }

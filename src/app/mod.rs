@@ -77,6 +77,8 @@ impl cosmic::Application for AppModel {
             active_account: None,
             cache: cache.clone(),
             selected_folder: None,
+            selected_mailbox_hash: None,
+            selected_folder_evicted: false,
             messages: Vec::new(),
             selected_message: None,
             messages_offset: 0,
@@ -94,6 +96,7 @@ impl cosmic::Application for AppModel {
             search_abort: None,
             folder_abort: None,
             message_abort: None,
+            body_abort: None,
             status_message: "Starting up...".into(),
             phase: Phase::Loading,
             folder_epoch: 0,
@@ -102,9 +105,14 @@ impl cosmic::Application for AppModel {
             refresh_epoch: 0,
             mutation_epoch: 0,
             flag_epoch: 0,
+            body_epoch: 0,
             refresh_in_flight: false,
             refresh_pending: false,
             refresh_accounts_outstanding: HashSet::new(),
+            mutation_in_flight: false,
+            flag_in_flight: false,
+            pending_move_intent: None,
+            pending_flag_intent: None,
             stale_apply_drop_count: 0,
             toc_drift_count: 0,
             postcondition_failure_count: 0,
@@ -455,8 +463,8 @@ impl cosmic::Application for AppModel {
 
             // Body / attachment viewing
             Message::ViewBody(_)
-            | Message::BodyDeferred
-            | Message::BodyLoaded(_)
+            | Message::BodyDeferred { .. }
+            | Message::BodyLoaded { .. }
             | Message::LinkClicked(_)
             | Message::CopyBody
             | Message::SaveAttachment(_)
@@ -465,9 +473,12 @@ impl cosmic::Application for AppModel {
             // Flag / move actions
             Message::ToggleRead(_)
             | Message::ToggleStar(_)
+            | Message::Delete(_)
             | Message::AutoMarkRead(_)
             | Message::Trash(_)
             | Message::Archive(_)
+            | Message::RunFlagIntent(_)
+            | Message::RunMoveIntent(_)
             | Message::DragMessageToFolder { .. }
             | Message::FolderDragEnter(_)
             | Message::FolderDragLeave
