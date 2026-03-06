@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use cosmic::app::Task;
 use cosmic::dialog::file_chooser;
 use cosmic::widget::text_editor;
@@ -8,6 +10,8 @@ use neverlight_mail_core::smtp::{self, OutgoingEmail};
 
 use crate::dnd_models::DraggedFiles;
 use crate::ui::compose_dialog::ComposeMode;
+
+const SMTP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Guess MIME type from file extension.
 fn mime_from_ext(path: &std::path::Path) -> &'static str {
@@ -288,6 +292,23 @@ impl AppModel {
                 self.compose_error = None;
 
                 let smtp_config = acct.config.smtp.clone();
+                let server_desc = format!(
+                    "{}:{} ({})",
+                    smtp_config.server,
+                    smtp_config.port,
+                    if smtp_config.use_starttls { "STARTTLS" } else { "implicit TLS" }
+                );
+                self.smtp_last_server = Some(server_desc.clone());
+                self.smtp_last_attempt_at = Some(Instant::now());
+
+                log::info!(
+                    "SMTP send: server={}, port={}, tls={}, user={}",
+                    smtp_config.server,
+                    smtp_config.port,
+                    if smtp_config.use_starttls { "starttls" } else { "implicit" },
+                    smtp_config.username,
+                );
+
                 let email = OutgoingEmail {
                     from: from_addr,
                     to: self.compose_to.clone(),
@@ -299,7 +320,19 @@ impl AppModel {
                 };
 
                 return cosmic::task::future(async move {
-                    Message::SendComplete(smtp::send_email(&smtp_config, &email).await)
+                    let result = tokio::time::timeout(
+                        SMTP_SEND_TIMEOUT,
+                        smtp::send_email(&smtp_config, &email),
+                    )
+                    .await;
+                    match result {
+                        Ok(inner) => Message::SendComplete(inner),
+                        Err(_) => Message::SendComplete(Err(format!(
+                            "SMTP timeout after {}s connecting to {}",
+                            SMTP_SEND_TIMEOUT.as_secs(),
+                            server_desc,
+                        ))),
+                    }
                 });
             }
 
@@ -311,6 +344,8 @@ impl AppModel {
             Message::SendComplete(Ok(())) => {
                 self.show_compose_dialog = false;
                 self.is_sending = false;
+                self.smtp_send_count += 1;
+                self.smtp_last_error = None;
                 self.compose_to.clear();
                 self.compose_subject.clear();
                 self.compose_body = text_editor::Content::new();
@@ -319,11 +354,15 @@ impl AppModel {
                 self.compose_attachments.clear();
                 self.compose_error = None;
                 self.status_message = "Message sent".into();
+                log::info!("SMTP send succeeded");
             }
 
             Message::SendComplete(Err(e)) => {
                 self.is_sending = false;
+                self.smtp_fail_count += 1;
+                self.smtp_last_error = Some(e.clone());
                 self.compose_error = Some(format!("Send failed: {e}"));
+                log::error!("SMTP send failed: {e}");
             }
 
             _ => {}

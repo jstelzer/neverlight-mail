@@ -217,6 +217,13 @@ pub struct AppModel {
     pub(super) last_sync_at: Option<Instant>,
     pub(super) last_refresh_at: Option<Instant>,
 
+    /// SMTP diagnostics.
+    pub(super) smtp_send_count: u64,
+    pub(super) smtp_fail_count: u64,
+    pub(super) smtp_last_error: Option<String>,
+    pub(super) smtp_last_attempt_at: Option<Instant>,
+    pub(super) smtp_last_server: Option<String>,
+
     // Search state
     pub(super) search_active: bool,
     pub(super) search_query: String,
@@ -258,6 +265,7 @@ pub struct AppModel {
     // Pane layout
     pub(super) panes: pane_grid::State<PaneKind>,
     pub(super) diagnostics_collapsed: bool,
+    pub(super) smtp_diagnostics_collapsed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -388,6 +396,7 @@ pub enum Message {
 
     PaneResized(pane_grid::ResizeEvent),
     ToggleDiagnostics,
+    ToggleSmtpDiagnostics,
 
     /// Auto-mark-read: fires 5s after a message is displayed
     AutoMarkRead(u64),

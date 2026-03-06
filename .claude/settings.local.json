@@ -25,7 +25,9 @@
       "Bash(rustc:*)",
       "Bash(cargo metadata:*)",
       "Bash(cp:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Read(//home/mental/projects/neverlight-forge-env/**)",
+      "Read(//home/mental/projects/**)"
     ]
   }
 }

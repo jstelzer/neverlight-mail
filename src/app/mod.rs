@@ -126,6 +126,12 @@ impl cosmic::Application for AppModel {
             last_sync_at: None,
             last_refresh_at: None,
 
+            smtp_send_count: 0,
+            smtp_fail_count: 0,
+            smtp_last_error: None,
+            smtp_last_attempt_at: None,
+            smtp_last_server: None,
+
             search_active: false,
             search_query: String::new(),
             search_focused: false,
@@ -156,6 +162,7 @@ impl cosmic::Application for AppModel {
 
             panes,
             diagnostics_collapsed: true,
+            smtp_diagnostics_collapsed: true,
         };
 
         let title_task = app.set_window_title("Nevermail".into());
@@ -371,6 +378,15 @@ impl cosmic::Application for AppModel {
                         last_refresh_at: self.last_refresh_at,
                         refresh_in_flight: self.refresh_in_flight,
                     },
+                    crate::ui::sidebar::SmtpDiagnosticsState {
+                        collapsed: self.smtp_diagnostics_collapsed,
+                        send_count: self.smtp_send_count,
+                        fail_count: self.smtp_fail_count,
+                        last_error: self.smtp_last_error.as_deref(),
+                        last_attempt_at: self.smtp_last_attempt_at,
+                        last_server: self.smtp_last_server.as_deref(),
+                        in_flight: self.is_sending,
+                    },
                 ),
                 PaneKind::MessageList => crate::ui::message_list::view(
                     crate::ui::message_list::MessageListState {
@@ -539,6 +555,10 @@ impl cosmic::Application for AppModel {
             }
             Message::ToggleDiagnostics => {
                 self.diagnostics_collapsed = !self.diagnostics_collapsed;
+                Task::none()
+            }
+            Message::ToggleSmtpDiagnostics => {
+                self.smtp_diagnostics_collapsed = !self.smtp_diagnostics_collapsed;
                 Task::none()
             }
             Message::Noop => Task::none(),
