@@ -316,6 +316,13 @@ impl AppModel {
                     widget::settings::item::builder("SMTP STARTTLS")
                         .toggler(model.smtp_starttls, Message::SetupSmtpStarttlsToggled),
                 );
+
+            if let SetupRequest::Edit { account_id } = &model.request {
+                controls = controls.push(
+                    widget::button::destructive("Delete Account")
+                        .on_press(Message::RequestDeleteAccount(account_id.clone())),
+                );
+            }
         }
 
         let mut dialog = widget::dialog()

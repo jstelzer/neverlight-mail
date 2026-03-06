@@ -28,19 +28,6 @@ fn move_postcondition_retry_message(result: &Result<bool, String>) -> Option<Str
     }
 }
 
-fn queue_latest_intent<T>(
-    in_flight: bool,
-    pending: &mut Option<T>,
-    incoming: T,
-) -> Option<T> {
-    if in_flight {
-        *pending = Some(incoming);
-        None
-    } else {
-        Some(incoming)
-    }
-}
-
 impl AppModel {
     pub(super) fn handle_actions(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -59,18 +46,9 @@ impl AppModel {
             }
             Message::ToggleRead(index) => {
                 if let Some(msg) = self.messages.get(index) {
-                    let Some(account_id) = self
-                        .account_for_mailbox(msg.mailbox_hash)
-                        .and_then(|i| self.accounts.get(i))
-                        .map(|a| a.config.id.clone())
-                    else {
-                        self.status_message =
-                            format!("Cannot resolve account for mailbox {}", msg.mailbox_hash);
-                        return Task::none();
-                    };
                     return self.queue_or_start_flag(PendingFlagIntent {
                         message: MessageIdentity {
-                            account_id,
+                            account_id: msg.account_id.clone(),
                             mailbox_hash: msg.mailbox_hash,
                             envelope_hash: msg.envelope_hash,
                         },
@@ -80,18 +58,9 @@ impl AppModel {
             }
             Message::ToggleStar(index) => {
                 if let Some(msg) = self.messages.get(index) {
-                    let Some(account_id) = self
-                        .account_for_mailbox(msg.mailbox_hash)
-                        .and_then(|i| self.accounts.get(i))
-                        .map(|a| a.config.id.clone())
-                    else {
-                        self.status_message =
-                            format!("Cannot resolve account for mailbox {}", msg.mailbox_hash);
-                        return Task::none();
-                    };
                     return self.queue_or_start_flag(PendingFlagIntent {
                         message: MessageIdentity {
-                            account_id,
+                            account_id: msg.account_id.clone(),
                             mailbox_hash: msg.mailbox_hash,
                             envelope_hash: msg.envelope_hash,
                         },
@@ -171,7 +140,7 @@ impl AppModel {
                     return Task::none();
                 }
                 self.pending_flag_epochs.remove(&message);
-                self.flag_in_flight = false;
+                self.flag_in_flight_accounts.remove(&message.account_id);
 
                 let mut tasks: Vec<Task<Message>> = Vec::new();
                 match result {
@@ -246,7 +215,7 @@ impl AppModel {
                         }
                     }
                 }
-                if let Some(next) = self.pending_flag_intent.take() {
+                if let Some(next) = self.pending_flag_intents.remove(&message.account_id) {
                     tasks.push(self.dispatch(Message::RunFlagIntent(next)));
                 }
                 if tasks.is_empty() {
@@ -329,8 +298,8 @@ impl AppModel {
                                 }
                             }));
                         } else {
-                            self.mutation_in_flight = false;
-                            tasks.push(self.try_run_next_move_intent());
+                            self.mutation_in_flight_accounts.remove(&source.account_id);
+                            tasks.push(self.try_run_next_move_intent_for(&source.account_id));
                         }
                         if !tasks.is_empty() {
                             return cosmic::task::batch(tasks);
@@ -354,7 +323,7 @@ impl AppModel {
                             mailbox_hash: Some(source.mailbox_hash),
                         });
                         self.phase = Phase::Error;
-                        self.mutation_in_flight = false;
+                        self.mutation_in_flight_accounts.remove(&source.account_id);
 
                         // Dead session likely caused the failure — drop and reconnect
                         let mut tasks: Vec<Task<Message>> = Vec::new();
@@ -368,7 +337,7 @@ impl AppModel {
                                 ));
                             }
                         }
-                        tasks.push(self.try_run_next_move_intent());
+                        tasks.push(self.try_run_next_move_intent_for(&source.account_id));
                         return cosmic::task::batch(tasks);
                     }
                 }
@@ -389,7 +358,7 @@ impl AppModel {
                     self.stale_apply_drop_count = self.stale_apply_drop_count.saturating_add(1);
                     return Task::none();
                 }
-                self.mutation_in_flight = false;
+                self.mutation_in_flight_accounts.remove(&source.account_id);
                 let mut tasks: Vec<Task<Message>> = Vec::new();
                 if let Some(retry_message) = move_postcondition_retry_message(&result) {
                     self.postcondition_failure_count =
@@ -411,7 +380,7 @@ impl AppModel {
                 } else {
                     self.clear_error_surface();
                 }
-                if let Some(next) = self.pending_move_intent.take() {
+                if let Some(next) = self.pending_move_intents.remove(&source.account_id) {
                     tasks.push(self.dispatch(Message::RunMoveIntent(next)));
                 }
                 if tasks.is_empty() {
@@ -424,28 +393,28 @@ impl AppModel {
         Task::none()
     }
 
-    fn try_run_next_flag_intent(&mut self) -> Task<Message> {
-        if let Some(next) = self.pending_flag_intent.take() {
+    fn try_run_next_flag_intent_for(&mut self, account_id: &str) -> Task<Message> {
+        if let Some(next) = self.pending_flag_intents.remove(account_id) {
             return self.dispatch(Message::RunFlagIntent(next));
         }
         Task::none()
     }
 
-    fn try_run_next_move_intent(&mut self) -> Task<Message> {
-        if let Some(next) = self.pending_move_intent.take() {
+    fn try_run_next_move_intent_for(&mut self, account_id: &str) -> Task<Message> {
+        if let Some(next) = self.pending_move_intents.remove(account_id) {
             return self.dispatch(Message::RunMoveIntent(next));
         }
         Task::none()
     }
 
     fn queue_or_start_flag(&mut self, intent: PendingFlagIntent) -> Task<Message> {
-        if let Some(start_now) =
-            queue_latest_intent(self.flag_in_flight, &mut self.pending_flag_intent, intent)
-        {
-            return self.dispatch(Message::RunFlagIntent(start_now));
+        let account_id = intent.message.account_id.clone();
+        if self.flag_in_flight_accounts.contains(&account_id) {
+            self.pending_flag_intents.insert(account_id, intent);
+            self.status_message = "Flag update queued...".into();
+            return Task::none();
         }
-        self.status_message = "Flag update queued...".into();
-        Task::none()
+        self.dispatch(Message::RunFlagIntent(intent))
     }
 
     fn run_flag_intent(&mut self, intent: PendingFlagIntent) -> Task<Message> {
@@ -458,11 +427,11 @@ impl AppModel {
                     && m.mailbox_hash == message_id.mailbox_hash
             })
         else {
-            return self.try_run_next_flag_intent();
+            return self.try_run_next_flag_intent_for(&message_id.account_id);
         };
 
         let Some(msg) = self.messages.get_mut(index) else {
-            return self.try_run_next_flag_intent();
+            return self.try_run_next_flag_intent_for(&message_id.account_id);
         };
 
         let prev_flags = store::flags_to_u8(msg.is_read, msg.is_starred);
@@ -531,7 +500,8 @@ impl AppModel {
             self.flag_epoch = self.flag_epoch.saturating_add(1);
             let epoch = self.flag_epoch;
             self.pending_flag_epochs.insert(message_id.clone(), epoch);
-            self.flag_in_flight = true;
+            self.flag_in_flight_accounts
+                .insert(message_id.account_id.clone());
             op_epoch = Some(epoch);
             let message_for_completion = message_id.clone();
             tasks.push(cosmic::task::future(async move {
@@ -553,7 +523,7 @@ impl AppModel {
 
         if op_epoch.is_none() {
             self.pending_flag_epochs.remove(&message_id);
-            self.flag_in_flight = false;
+            self.flag_in_flight_accounts.remove(&message_id.account_id);
         }
         if tasks.is_empty() {
             Task::none()
@@ -563,49 +533,45 @@ impl AppModel {
     }
 
     fn queue_or_start_move(&mut self, intent: PendingMoveIntent) -> Task<Message> {
-        if let Some(start_now) = queue_latest_intent(
-            self.mutation_in_flight,
-            &mut self.pending_move_intent,
-            intent,
-        ) {
-            return self.dispatch(Message::RunMoveIntent(start_now));
+        let account_id = intent.source.account_id.clone();
+        if self.mutation_in_flight_accounts.contains(&account_id) {
+            self.pending_move_intents.insert(account_id, intent);
+            self.status_message = "Move queued...".into();
+            return Task::none();
         }
-        self.status_message = "Move queued...".into();
-        Task::none()
+        self.dispatch(Message::RunMoveIntent(intent))
     }
 
     fn run_move_intent(&mut self, intent: PendingMoveIntent) -> Task<Message> {
+        let source_account_id = intent.source.account_id.clone();
         if intent.source == intent.dest {
-            return self.try_run_next_move_intent();
+            return self.try_run_next_move_intent_for(&source_account_id);
         }
         if self
             .session_for_account_mailbox(&intent.source.account_id, intent.source.mailbox_hash)
             .is_none()
         {
             self.status_message = "Move failed: account is offline".into();
-            return self.try_run_next_move_intent();
+            return self.try_run_next_move_intent_for(&source_account_id);
         }
         let Some(index) = self.messages.iter().position(|m| {
             m.envelope_hash == intent.message.envelope_hash
                 && m.mailbox_hash == intent.source.mailbox_hash
         }) else {
-            return self.try_run_next_move_intent();
+            return self.try_run_next_move_intent_for(&source_account_id);
         };
         if let Some(removed) = self.remove_message_optimistic(index) {
             self.pending_move_restore
                 .insert(intent.message.clone(), (removed, index));
             return self.dispatch_move(intent.message, intent.source, intent.dest);
         }
-        self.try_run_next_move_intent()
+        self.try_run_next_move_intent_for(&source_account_id)
     }
 
     fn trash_intent_for_index(&mut self, index: usize) -> Option<PendingMoveIntent> {
         if let Some(msg) = self.messages.get(index) {
             let mailbox_hash = msg.mailbox_hash;
-            let account_id = self
-                .account_for_mailbox(mailbox_hash)
-                .and_then(|i| self.accounts.get(i))
-                .map(|a| a.config.id.clone())?;
+            let account_id = msg.account_id.clone();
             if let Some(folder_map) =
                 self.folder_map_for_account_mailbox(&account_id, mailbox_hash)
             {
@@ -639,10 +605,7 @@ impl AppModel {
     fn archive_intent_for_index(&mut self, index: usize) -> Option<PendingMoveIntent> {
         if let Some(msg) = self.messages.get(index) {
             let mailbox_hash = msg.mailbox_hash;
-            let account_id = self
-                .account_for_mailbox(mailbox_hash)
-                .and_then(|i| self.accounts.get(i))
-                .map(|a| a.config.id.clone())?;
+            let account_id = msg.account_id.clone();
             if let Some(folder_map) =
                 self.folder_map_for_account_mailbox(&account_id, mailbox_hash)
             {
@@ -738,7 +701,8 @@ impl AppModel {
         if let Some(session) =
             self.session_for_account_mailbox(&source.account_id, source.mailbox_hash)
         {
-            self.mutation_in_flight = true;
+            self.mutation_in_flight_accounts
+                .insert(source.account_id.clone());
             self.mutation_epoch = self.mutation_epoch.saturating_add(1);
             let epoch = self.mutation_epoch;
             self.pending_move_epochs.insert(message.clone(), epoch);
@@ -771,10 +735,7 @@ impl AppModel {
 
 #[cfg(test)]
 mod tests {
-    use super::{move_postcondition_retry_message, queue_latest_intent};
-    use crate::app::{
-        FlagIntentKind, MailboxIdentity, MessageIdentity, PendingFlagIntent, PendingMoveIntent,
-    };
+    use super::move_postcondition_retry_message;
 
     #[test]
     fn move_postcondition_ok_true_is_noop() {
@@ -794,81 +755,5 @@ mod tests {
             move_postcondition_retry_message(&Err("imap timeout".to_string())).expect("message");
         assert!(msg.contains("retryable"));
         assert!(msg.contains("imap timeout"));
-    }
-
-    #[test]
-    fn flag_lane_queue_keeps_only_latest_pending_intent() {
-        let mut pending: Option<PendingFlagIntent> = None;
-        let first = PendingFlagIntent {
-            message: MessageIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 10,
-                envelope_hash: 1,
-            },
-            kind: FlagIntentKind::ToggleRead,
-        };
-        let second = PendingFlagIntent {
-            message: MessageIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 10,
-                envelope_hash: 2,
-            },
-            kind: FlagIntentKind::ToggleStar,
-        };
-
-        assert_eq!(
-            queue_latest_intent(false, &mut pending, first.clone()),
-            Some(first.clone())
-        );
-        assert_eq!(pending, None);
-        assert_eq!(queue_latest_intent(true, &mut pending, first.clone()), None);
-        assert_eq!(pending, Some(first));
-        assert_eq!(queue_latest_intent(true, &mut pending, second.clone()), None);
-        assert_eq!(pending, Some(second));
-    }
-
-    #[test]
-    fn mutation_lane_queue_keeps_only_latest_pending_intent() {
-        let mut pending: Option<PendingMoveIntent> = None;
-        let first = PendingMoveIntent {
-            message: MessageIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 11,
-                envelope_hash: 7,
-            },
-            source: MailboxIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 11,
-            },
-            dest: MailboxIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 22,
-            },
-        };
-        let second = PendingMoveIntent {
-            message: MessageIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 11,
-                envelope_hash: 8,
-            },
-            source: MailboxIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 11,
-            },
-            dest: MailboxIdentity {
-                account_id: "a1".into(),
-                mailbox_hash: 33,
-            },
-        };
-
-        assert_eq!(
-            queue_latest_intent(false, &mut pending, first.clone()),
-            Some(first.clone())
-        );
-        assert_eq!(pending, None);
-        assert_eq!(queue_latest_intent(true, &mut pending, first.clone()), None);
-        assert_eq!(pending, Some(first));
-        assert_eq!(queue_latest_intent(true, &mut pending, second.clone()), None);
-        assert_eq!(pending, Some(second));
     }
 }

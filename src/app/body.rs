@@ -57,16 +57,7 @@ impl AppModel {
 
                 let body_task = if let Some(msg) = self.messages.get(index) {
                     let envelope_hash = msg.envelope_hash;
-                    let account_id = self
-                        .active_account
-                        .and_then(|i| self.accounts.get(i))
-                        .filter(|a| a.folders.iter().any(|f| f.mailbox_hash == msg.mailbox_hash))
-                        .map(|a| a.config.id.clone())
-                        .or_else(|| {
-                            self.account_for_mailbox(msg.mailbox_hash)
-                                .and_then(|i| self.accounts.get(i))
-                                .map(|a| a.config.id.clone())
-                        });
+                    let account_id = Some(msg.account_id.clone());
 
                     if let Some(cache) = &self.cache {
                         let Some(account_id_for_cache) = account_id.clone() else {
@@ -323,17 +314,12 @@ impl AppModel {
                         .iter()
                         .position(|m| m.envelope_hash == envelope_hash)
                     {
+                        let account_id = self.messages[pos].account_id.clone();
                         self.remove_message_optimistic(pos);
                         // Evict from cache too
                         if let Some(cache) = &self.cache {
                             let cache = cache.clone();
-                            if let Some(account_id) = self
-                                .account_for_mailbox(
-                                    self.selected_mailbox_hash.unwrap_or(0),
-                                )
-                                .and_then(|i| self.accounts.get(i))
-                                .map(|a| a.config.id.clone())
-                            {
+                            if !account_id.is_empty() {
                                 let evict_task = cosmic::task::future(async move {
                                     if let Err(e) = cache
                                         .remove_message(account_id, envelope_hash)

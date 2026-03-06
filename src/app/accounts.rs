@@ -27,6 +27,101 @@ fn revalidated_selected_folder_index(
 }
 
 impl AppModel {
+    fn clear_active_selection(&mut self) {
+        self.active_account = None;
+        self.selected_folder = None;
+        self.selected_mailbox_hash = None;
+        self.selected_folder_evicted = false;
+        self.clear_selected_folder_projection();
+    }
+
+    fn select_default_folder_for_account(&mut self, account_idx: usize) -> Task<Message> {
+        let Some(acct) = self.accounts.get(account_idx) else {
+            return Task::none();
+        };
+        let folder_idx = acct
+            .folders
+            .iter()
+            .position(|f| f.path == "INBOX")
+            .or_else(|| (!acct.folders.is_empty()).then_some(0));
+
+        self.active_account = Some(account_idx);
+        if let Some(folder_idx) = folder_idx {
+            self.selected_folder = Some(folder_idx);
+            self.selected_mailbox_hash = Some(acct.folders[folder_idx].mailbox_hash);
+            self.selected_folder_evicted = false;
+            return self.dispatch(Message::SelectFolder(account_idx, folder_idx));
+        }
+
+        self.selected_folder = None;
+        self.selected_mailbox_hash = None;
+        self.selected_folder_evicted = false;
+        self.clear_selected_folder_projection();
+        Task::none()
+    }
+
+    fn delete_account_now(&mut self, id: &str) -> Task<Message> {
+        let Some(idx) = self.account_index(id) else {
+            return Task::none();
+        };
+
+        let removed = self.accounts.remove(idx);
+        if let Err(e) = self.save_multi_account_config() {
+            self.accounts.insert(idx, removed);
+            self.set_status_error(format!("Failed to remove account from config: {e}"));
+            return Task::none();
+        }
+
+        let removed_id = removed.config.id.clone();
+        let removed_username = removed.config.username.clone();
+        let removed_server = removed.config.imap_server.clone();
+
+        // Keep compose account index valid.
+        if self.accounts.is_empty() {
+            self.compose_account = 0;
+        } else if self.compose_account >= self.accounts.len() {
+            self.compose_account = self.accounts.len() - 1;
+        }
+        self.refresh_compose_cache();
+
+        // Adjust active account selection.
+        let mut follow_up = Task::none();
+        if self.accounts.is_empty() {
+            self.clear_active_selection();
+        } else if let Some(active) = self.active_account {
+            if active == idx {
+                let next_idx = idx.min(self.accounts.len() - 1);
+                follow_up = self.select_default_folder_for_account(next_idx);
+            } else if active > idx {
+                self.active_account = Some(active - 1);
+                self.revalidate_selected_folder();
+            }
+        }
+
+        // Clean up keyring passwords
+        if let Err(e) = neverlight_mail_core::keyring::delete_password(&removed_username, &removed_server) {
+            log::warn!("Failed to delete IMAP password from keyring: {}", e);
+        }
+        if let Err(e) = neverlight_mail_core::keyring::delete_smtp_password(&removed_id) {
+            log::debug!("No SMTP password to delete from keyring: {}", e);
+        }
+
+        self.status_message = "Account removed".into();
+
+        // Clean up cached data for removed account
+        let mut tasks = vec![follow_up];
+        if let Some(cache) = &self.cache {
+            let cache = cache.clone();
+            tasks.push(cosmic::task::future(async move {
+                if let Err(e) = cache.remove_account(removed_id).await {
+                    log::warn!("Failed to clean cache for removed account: {}", e);
+                }
+                Message::Noop
+            }));
+        }
+        cosmic::task::batch(tasks)
+    }
+
     pub(super) fn mailbox_belongs_to_account(&self, account_id: &str, mailbox_hash: u64) -> bool {
         self.account_index(account_id)
             .and_then(|idx| self.accounts.get(idx))
@@ -88,25 +183,6 @@ impl AppModel {
             self.status_message = "Selected folder no longer exists; selection cleared".into();
             self.phase = Phase::Idle;
         }
-    }
-
-    /// Find the account index that owns a given mailbox_hash.
-    pub(super) fn account_for_mailbox(&self, mailbox_hash: u64) -> Option<usize> {
-        let mut matches = self
-            .accounts
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.folders.iter().any(|f| f.mailbox_hash == mailbox_hash))
-            .map(|(i, _)| i);
-        let first = matches.next();
-        if first.is_some() && matches.next().is_some() {
-            log::error!(
-                "Ambiguous mailbox ownership for mailbox_hash {} across accounts",
-                mailbox_hash
-            );
-            return None;
-        }
-        first
     }
 
     /// Find account index by explicit account hint and mailbox hash.
@@ -235,6 +311,19 @@ impl AppModel {
                 self.setup_model = Some(SetupModel::from_config_needs(&ConfigNeedsInput::FullSetup));
                 self.setup_password_visible = false;
             }
+            Message::RequestDeleteAccount(ref id) => {
+                self.confirm_delete_account_id = Some(id.clone());
+            }
+            Message::CancelDeleteAccount => {
+                self.confirm_delete_account_id = None;
+            }
+            Message::ConfirmDeleteAccount => {
+                let Some(id) = self.confirm_delete_account_id.take() else {
+                    return Task::none();
+                };
+                self.setup_model = None;
+                return self.delete_account_now(&id);
+            }
             Message::AccountEdit(ref id) => {
                 if let Some(acct) = self.accounts.iter().find(|a| &a.config.id == id) {
                     use neverlight_mail_core::setup::SetupFields;
@@ -254,50 +343,6 @@ impl AppModel {
                         },
                     ));
                     self.setup_password_visible = false;
-                }
-            }
-            Message::AccountRemove(ref id) => {
-                if let Some(idx) = self.account_index(id) {
-                    let removed_id = self.accounts[idx].config.id.clone();
-                    let removed_username = self.accounts[idx].config.username.clone();
-                    let removed_server = self.accounts[idx].config.imap_server.clone();
-                    self.accounts.remove(idx);
-                    // Adjust active_account
-                    if let Some(active) = self.active_account {
-                        if active == idx {
-                            self.active_account = None;
-                            self.selected_folder = None;
-                            self.selected_mailbox_hash = None;
-                            self.selected_folder_evicted = false;
-                            self.clear_selected_folder_projection();
-                        } else if active > idx {
-                            self.active_account = Some(active - 1);
-                            self.revalidate_selected_folder();
-                        }
-                    }
-                    // Save updated config
-                    let _ = self.save_multi_account_config();
-
-                    // Clean up keyring passwords
-                    if let Err(e) = neverlight_mail_core::keyring::delete_password(&removed_username, &removed_server) {
-                        log::warn!("Failed to delete IMAP password from keyring: {}", e);
-                    }
-                    if let Err(e) = neverlight_mail_core::keyring::delete_smtp_password(&removed_id) {
-                        log::debug!("No SMTP password to delete from keyring: {}", e);
-                    }
-
-                    self.status_message = "Account removed".into();
-
-                    // Clean up cached data for removed account
-                    if let Some(cache) = &self.cache {
-                        let cache = cache.clone();
-                        return cosmic::task::future(async move {
-                            if let Err(e) = cache.remove_account(removed_id).await {
-                                log::warn!("Failed to clean cache for removed account: {}", e);
-                            }
-                            Message::Noop
-                        });
-                    }
                 }
             }
             Message::ToggleAccountCollapse(idx) => {

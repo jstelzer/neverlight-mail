@@ -96,7 +96,7 @@ pub fn view<'a>(
                 )
                 .push(
                     widget::button::icon(widget::icon::from_name("edit-delete-symbolic"))
-                        .on_press(Message::AccountRemove(aid_remove))
+                        .on_press(Message::RequestDeleteAccount(aid_remove))
                         .padding(4)
                         .class(cosmic::theme::Button::Text),
                 );

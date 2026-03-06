@@ -112,10 +112,10 @@ impl cosmic::Application for AppModel {
             refresh_accounts_outstanding: HashSet::new(),
             refresh_started_at: None,
             refresh_timeout_reported: false,
-            mutation_in_flight: false,
-            flag_in_flight: false,
-            pending_move_intent: None,
-            pending_flag_intent: None,
+            mutation_in_flight_accounts: HashSet::new(),
+            flag_in_flight_accounts: HashSet::new(),
+            pending_move_intents: HashMap::new(),
+            pending_flag_intents: HashMap::new(),
             notified_envelopes: HashSet::new(),
             stale_apply_drop_count: 0,
             toc_drift_count: 0,
@@ -154,6 +154,7 @@ impl cosmic::Application for AppModel {
 
             setup_model: None,
             setup_password_visible: false,
+            confirm_delete_account_id: None,
 
             folder_drag_target: None,
             pending_body: None,
@@ -213,6 +214,27 @@ impl cosmic::Application for AppModel {
     }
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        if let Some(account_id) = &self.confirm_delete_account_id {
+            let label = self
+                .accounts
+                .iter()
+                .find(|a| &a.config.id == account_id)
+                .map(|a| a.config.label.clone())
+                .unwrap_or_else(|| account_id.clone());
+            let dialog = widget::dialog()
+                .title("Delete Account")
+                .body(format!(
+                    "Delete account \"{}\"? This removes local cache and saved credentials.",
+                    label
+                ))
+                .primary_action(
+                    widget::button::destructive("Delete").on_press(Message::ConfirmDeleteAccount),
+                )
+                .secondary_action(
+                    widget::button::standard("Cancel").on_press(Message::CancelDeleteAccount),
+                );
+            return Some(dialog.into());
+        }
         if self.setup_model.is_some() {
             return Some(self.setup_dialog());
         }
@@ -392,10 +414,6 @@ impl cosmic::Application for AppModel {
                     crate::ui::message_list::MessageListState {
                         messages: &self.messages,
                         visible_indices: &self.visible_indices,
-                        active_account_id: self
-                            .active_account
-                            .and_then(|i| self.accounts.get(i))
-                            .map(|a| a.config.id.as_str()),
                         selected: self.selected_message,
                         has_more: self.has_more_messages && !self.search_active,
                         collapsed_threads: &self.collapsed_threads,
@@ -496,7 +514,9 @@ impl cosmic::Application for AppModel {
             // Account management
             Message::AccountAdd
             | Message::AccountEdit(_)
-            | Message::AccountRemove(_)
+            | Message::RequestDeleteAccount(_)
+            | Message::ConfirmDeleteAccount
+            | Message::CancelDeleteAccount
             | Message::ToggleAccountCollapse(_) => self.handle_account_management(message),
 
             // Sync / connection / folder selection

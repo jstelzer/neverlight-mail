@@ -212,10 +212,10 @@ pub struct AppModel {
     pub(super) refresh_accounts_outstanding: HashSet<AccountId>,
     pub(super) refresh_started_at: Option<Instant>,
     pub(super) refresh_timeout_reported: bool,
-    pub(super) mutation_in_flight: bool,
-    pub(super) flag_in_flight: bool,
-    pub(super) pending_move_intent: Option<PendingMoveIntent>,
-    pub(super) pending_flag_intent: Option<PendingFlagIntent>,
+    pub(super) mutation_in_flight_accounts: HashSet<AccountId>,
+    pub(super) flag_in_flight_accounts: HashSet<AccountId>,
+    pub(super) pending_move_intents: HashMap<AccountId, PendingMoveIntent>,
+    pub(super) pending_flag_intents: HashMap<AccountId, PendingFlagIntent>,
     /// Recently notified messages (dedup watch Create events).
     pub(super) notified_envelopes: HashSet<MessageIdentity>,
     /// Diagnostics counters.
@@ -262,6 +262,7 @@ pub struct AppModel {
     // Setup dialog state — core fields live in SetupModel, visibility is local
     pub(super) setup_model: Option<SetupModel>,
     pub(super) setup_password_visible: bool,
+    pub(super) confirm_delete_account_id: Option<AccountId>,
 
     // DnD state
     pub(super) folder_drag_target: Option<usize>,
@@ -420,7 +421,9 @@ pub enum Message {
     // Account management
     AccountAdd,
     AccountEdit(AccountId),
-    AccountRemove(AccountId),
+    RequestDeleteAccount(AccountId),
+    ConfirmDeleteAccount,
+    CancelDeleteAccount,
     ToggleAccountCollapse(usize),
 
     // Setup dialog messages

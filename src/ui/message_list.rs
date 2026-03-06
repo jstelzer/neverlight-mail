@@ -12,7 +12,6 @@ use crate::dnd_models::DraggedMessage;
 pub struct MessageListState<'a> {
     pub messages: &'a [MessageSummary],
     pub visible_indices: &'a [usize],
-    pub active_account_id: Option<&'a str>,
     pub selected: Option<usize>,
     pub has_more: bool,
     pub collapsed_threads: &'a HashSet<u64>,
@@ -30,7 +29,6 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
     let MessageListState {
         messages,
         visible_indices,
-        active_account_id,
         selected,
         has_more,
         collapsed_threads,
@@ -38,7 +36,6 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
         search_active,
         search_query,
     } = state;
-    let drag_account_id = active_account_id.unwrap_or_default().to_string();
     let mut col = widget::column().spacing(2).padding(8);
 
     if search_active {
@@ -105,7 +102,7 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
 
             let env_hash = msg.envelope_hash;
             let mbox_hash = msg.mailbox_hash;
-            let source_account_id = drag_account_id.clone();
+            let source_account_id = msg.account_id.clone();
             let source = widget::dnd_source::<Message, DraggedMessage>(btn)
                 .drag_content(move || DraggedMessage {
                     source_account_id: source_account_id.clone(),
