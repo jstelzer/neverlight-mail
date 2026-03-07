@@ -33,6 +33,9 @@ neverlight-mail/                    (workspace root)
 │   │   ├── lib.rs                  (pub mod + melib re-exports)
 │   │   ├── config.rs              — Config resolution (env → file+keyring → setup dialog)
 │   │   ├── imap.rs                — ImapSession: connect, fetch, flags, move, watch
+│   │   ├── jmap.rs                — JmapSession: JMAP backend (mirrors ImapSession)
+│   │   ├── discovery.rs           — JMAP autodiscovery (RFC 8620 §2.2)
+│   │   ├── envelope.rs            — Shared envelope/body extraction (both backends)
 │   │   ├── smtp.rs                — SMTP send via lettre
 │   │   ├── mime.rs                — render_body, clean_email_html, open_link
 │   │   ├── keyring.rs             — OS keyring credential backend
@@ -91,6 +94,16 @@ cosmic::task::future(async move {
     Message::FoldersLoaded(session.fetch_folders().await)
 })
 ```
+
+### Dual-Backend Architecture (IMAP + JMAP)
+The app supports both IMAP and JMAP backends. Protocol selection happens at account setup time via autodiscovery (`discovery.rs` probes `/.well-known/jmap`). The `MailSession` enum in `types.rs` wraps either `Arc<ImapSession>` or `Arc<JmapSession>` behind a uniform interface — all dispatch sites use `MailSession`, never the concrete backend directly.
+
+Key design decisions:
+- **Protocol dispatch at session boundary** — `connect_account()` in `mod.rs` branches once; everything above sees `MailSession`
+- **Shared envelope processing** — `envelope.rs` contains pure functions (`envelope_to_summary`, `extract_body`, `compute_thread_id`) used by both backends
+- **Account config stores protocol** — `AccountCapabilities { protocol, jmap_session_url, ... }` persists with `#[serde(default)]` for backward compat
+- **Watch stream unification** — `watch.rs` uses a macro to handle different concrete stream types from each backend
+- **No protocol-specific UI** — sidebar, message list, and body view are identical regardless of backend
 
 ### ImapSession Design
 - Wraps `Arc<Mutex<Box<ImapType>>>` for interior mutability (`fetch()` requires `&mut self`)
@@ -225,3 +238,11 @@ The cascade before fixes: IDLE dies silently → 5-min periodic refresh reuses d
 ## Known Limitations
 
 - **No offline compose** — requires active IMAP session for SMTP relay config
+
+### JMAP Phase 1 Limitations
+- **Polling only** — no SSE/EventSource push; melib polls `Email/changes` every 60s per mailbox
+- **App password auth only** — no OAuth; Fastmail app passwords work
+- **No compose/send via JMAP** — SMTP is used for all sending regardless of backend
+- **No mailbox management** — create/rename/delete mailboxes not supported over JMAP
+- **melib delta sync gaps** — `Email/changes.updated` and `EmailQueryChanges.added` items are dropped by melib 0.8.13 (TODO comments in upstream). Moves from another client to a viewed mailbox may take up to 5 minutes (caught by periodic full refresh). New messages, deletions, and flag changes are caught within 60s.
+- **Fastmail validated only** — other JMAP providers may work but are untested

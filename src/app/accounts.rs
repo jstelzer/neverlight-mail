@@ -1,14 +1,12 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use cosmic::app::Task;
 
 use neverlight_mail_core::config::ConfigNeedsInput;
-use neverlight_mail_core::imap::ImapSession;
 use neverlight_mail_core::models::Folder;
 use neverlight_mail_core::setup::SetupModel;
 
-use super::{AppModel, Message, Phase};
+use super::{AppModel, MailSession, Message, Phase};
 
 fn revalidated_selected_folder_index(
     selected_mailbox_hash: Option<u64>,
@@ -203,7 +201,7 @@ impl AppModel {
         &self,
         account_id: &str,
         mailbox_hash: u64,
-    ) -> Option<Arc<ImapSession>> {
+    ) -> Option<MailSession> {
         self.account_for_account_mailbox(account_id, mailbox_hash)
             .and_then(|i| self.accounts[i].session.clone())
     }
@@ -227,7 +225,7 @@ impl AppModel {
     }
 
     /// Get the active account's session.
-    pub(super) fn active_session(&self) -> Option<Arc<ImapSession>> {
+    pub(super) fn active_session(&self) -> Option<MailSession> {
         self.active_account
             .and_then(|i| self.accounts.get(i))
             .and_then(|a| a.session.clone())
@@ -330,6 +328,7 @@ impl AppModel {
                     self.setup_model = Some(SetupModel::for_edit(
                         id.clone(),
                         SetupFields {
+                            protocol: acct.config.capabilities.protocol,
                             label: acct.config.label.clone(),
                             server: acct.config.imap_server.clone(),
                             port: acct.config.imap_port.to_string(),
@@ -372,6 +371,7 @@ impl AppModel {
                 password: PasswordBackend::Keyring,
                 email_addresses: a.config.email_addresses.clone(),
                 smtp: a.config.smtp_overrides.clone(),
+                capabilities: a.config.capabilities.clone(),
             })
             .collect();
 

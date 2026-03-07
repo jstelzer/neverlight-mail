@@ -3,10 +3,9 @@ use cosmic::widget;
 use cosmic::Element;
 
 use neverlight_mail_core::config::{
-    AccountConfig, FileAccountConfig, MultiAccountFileConfig, SmtpConfig,
+    AccountConfig, FileAccountConfig, MultiAccountFileConfig, Protocol, SmtpConfig,
     new_account_id,
 };
-use neverlight_mail_core::imap::ImapSession;
 use neverlight_mail_core::setup::{self, FieldId, SetupInput, SetupRequest};
 
 use super::{AccountState, AppModel, ConnectionState, Message};
@@ -23,6 +22,13 @@ impl AppModel {
 
     pub(super) fn handle_setup(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::SetupProtocolChanged(idx) => {
+                let protocol = match idx {
+                    1 => Protocol::Jmap,
+                    _ => Protocol::Imap,
+                };
+                self.setup_mut().protocol = protocol;
+            }
             // Core IMAP fields → SetupModel
             Message::SetupLabelChanged(v) => {
                 self.setup_mut().update(SetupInput::SetField(FieldId::Label, v));
@@ -82,6 +88,7 @@ impl AppModel {
                 );
 
                 // Extract validated values from SetupModel
+                let protocol = self.setup().protocol;
                 let server = self.setup().server.trim().to_string();
                 let username = self.setup().username.trim().to_string();
                 let password = self.setup().password.clone();
@@ -139,6 +146,17 @@ impl AppModel {
                         .unwrap_or_else(|| setup::store_password(&username, &server, &password))
                 };
 
+                // Build capabilities from declared protocol
+                let capabilities = match protocol {
+                    Protocol::Jmap => neverlight_mail_core::config::AccountCapabilities {
+                        protocol: Protocol::Jmap,
+                        jmap_session_url: Some(format!("https://{}/.well-known/jmap", server)),
+                        supports_push: false,
+                        supports_submission: false,
+                    },
+                    Protocol::Imap => neverlight_mail_core::config::AccountCapabilities::default(),
+                };
+
                 // Build file account config
                 let fac = FileAccountConfig {
                     id: account_id.clone(),
@@ -150,6 +168,7 @@ impl AppModel {
                     password: password_backend,
                     email_addresses: email_addresses.clone(),
                     smtp: smtp_overrides.clone(),
+                    capabilities: capabilities.clone(),
                 };
 
                 // Update or add to multi-account config
@@ -188,9 +207,10 @@ impl AppModel {
                     email_addresses: email_addresses.clone(),
                     smtp: smtp_config,
                     smtp_overrides,
+                    capabilities,
                 };
 
-                let imap_config = account_config.to_imap_config();
+                let connect_config = account_config.clone();
 
                 // Update or add AccountState
                 if let Some(idx) = self.account_index(&account_id) {
@@ -207,10 +227,7 @@ impl AppModel {
                 self.status_message = format!("{}: Connecting...", label);
 
                 let aid = account_id.clone();
-                return cosmic::task::future(async move {
-                    let result = ImapSession::connect(imap_config).await;
-                    Message::AccountConnected { account_id: aid, result }
-                });
+                return super::connect_account(connect_config, aid);
             }
 
             Message::SetupCancel => {
@@ -236,21 +253,39 @@ impl AppModel {
         let is_password_only = matches!(model.request, SetupRequest::PasswordOnly { .. });
 
         if !is_password_only {
+            let protocol_idx = match model.protocol {
+                Protocol::Imap => 0,
+                Protocol::Jmap => 1,
+            };
+
             controls = controls.push(
                 widget::text_input("Account name (e.g. Work)", &model.label)
                     .label("Label")
                     .on_input(Message::SetupLabelChanged),
             );
 
+            controls = controls.push(
+                widget::settings::item::builder("Protocol").control(
+                    widget::dropdown(&["IMAP", "JMAP"][..], Some(protocol_idx), Message::SetupProtocolChanged),
+                ),
+            );
+
+            let is_jmap = model.protocol == Protocol::Jmap;
+            let (server_label, server_placeholder, port_placeholder) = if is_jmap {
+                ("Server (domain)", "fastmail.com", "443")
+            } else {
+                ("IMAP Server", "mail.example.com", "993")
+            };
+
             controls = controls
-                .push(widget::text::body("Incoming Mail (IMAP)"))
+                .push(widget::text::body(if is_jmap { "Incoming Mail (JMAP)" } else { "Incoming Mail (IMAP)" }))
                 .push(
-                    widget::text_input("mail.example.com", &model.server)
-                        .label("IMAP Server")
+                    widget::text_input(server_placeholder, &model.server)
+                        .label(server_label)
                         .on_input(Message::SetupServerChanged),
                 )
                 .push(
-                    widget::text_input("993", &model.port)
+                    widget::text_input(port_placeholder, &model.port)
                         .label("Port")
                         .on_input(Message::SetupPortChanged),
                 )

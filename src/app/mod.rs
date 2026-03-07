@@ -21,13 +21,49 @@ use cosmic::widget;
 use cosmic::widget::{pane_grid, text_editor};
 use cosmic::Element;
 
-use neverlight_mail_core::config::{ConfigNeedsInput, LayoutConfig};
+use neverlight_mail_core::config::{AccountConfig, ConfigNeedsInput, LayoutConfig, Protocol};
 use neverlight_mail_core::imap::ImapSession;
+use neverlight_mail_core::jmap::JmapSession;
 use neverlight_mail_core::setup::SetupModel;
 use neverlight_mail_core::store::CacheHandle;
 
 use crate::dnd_models::DraggedFiles;
 use crate::ui::compose_dialog::ComposeMode;
+
+/// Connect to an account using the protocol declared in its config.
+fn connect_account(config: AccountConfig, account_id: String) -> Task<Message> {
+    let protocol = config.protocol();
+    let label = config.label.clone();
+    log::info!("[{}] Connecting via {:?} (account={})", label, protocol, account_id);
+    cosmic::task::future(async move {
+        let result = match protocol {
+            Protocol::Imap => {
+                let imap_config = config.to_imap_config();
+                ImapSession::connect(imap_config).await.map(MailSession::Imap)
+            }
+            Protocol::Jmap => {
+                let session_url = config
+                    .capabilities
+                    .jmap_session_url
+                    .clone()
+                    .unwrap_or_else(|| {
+                        format!("https://{}/.well-known/jmap", config.imap_server)
+                    });
+                log::info!("[{}] JMAP session URL: {}", label, session_url);
+                JmapSession::connect(&config, &session_url)
+                    .await
+                    .map(MailSession::Jmap)
+            }
+        };
+        if let Err(ref e) = result {
+            log::error!("[{}] {:?} connect failed: {}", label, protocol, e);
+        }
+        Message::AccountConnected {
+            account_id,
+            result,
+        }
+    })
+}
 
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
@@ -174,8 +210,7 @@ impl cosmic::Application for AppModel {
             Ok(account_configs) => {
                 for ac in account_configs {
                     let account_id = ac.id.clone();
-                    let imap_config = ac.to_imap_config();
-                    let mut acct = AccountState::new(ac);
+                    let mut acct = AccountState::new(ac.clone());
                     acct.conn_state = ConnectionState::Connecting;
                     app.accounts.push(acct);
 
@@ -188,12 +223,9 @@ impl cosmic::Application for AppModel {
                         }));
                     }
 
-                    // Start connecting
+                    // Start connecting — dispatch by protocol
                     let aid = account_id.clone();
-                    tasks.push(cosmic::task::future(async move {
-                        let result = ImapSession::connect(imap_config).await;
-                        Message::AccountConnected { account_id: aid, result }
-                    }));
+                    tasks.push(connect_account(ac, aid));
                 }
                 if app.accounts.is_empty() {
                     app.setup_model = Some(SetupModel::from_config_needs(&ConfigNeedsInput::FullSetup));
@@ -342,14 +374,14 @@ impl cosmic::Application for AppModel {
             }));
         }
 
-        // Per-account IMAP watch streams
+        // Per-account watch streams (IMAP IDLE or JMAP poll)
         for (i, acct) in self.accounts.iter().enumerate() {
             if let Some(session) = &acct.session {
                 let session = session.clone();
                 let account_id = acct.config.id.clone();
-                let sub_id = format!("imap-watch-{}", i);
+                let sub_id = format!("mail-watch-{}", i);
                 subs.push(
-                    Subscription::run_with_id(sub_id, watch::imap_watch_stream(session))
+                    Subscription::run_with_id(sub_id, watch::mail_watch_stream(session))
                         .map(move |evt| Message::ImapEvent(account_id.clone(), evt)),
                 );
             }
@@ -495,7 +527,8 @@ impl cosmic::Application for AppModel {
             | Message::SendComplete(_) => self.handle_compose(message),
 
             // Setup
-            Message::SetupLabelChanged(_)
+            Message::SetupProtocolChanged(_)
+            | Message::SetupLabelChanged(_)
             | Message::SetupServerChanged(_)
             | Message::SetupPortChanged(_)
             | Message::SetupUsernameChanged(_)

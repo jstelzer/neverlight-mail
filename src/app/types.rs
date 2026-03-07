@@ -8,7 +8,9 @@ use futures::future::AbortHandle;
 
 use neverlight_mail_core::config::{AccountConfig, AccountId};
 use neverlight_mail_core::imap::ImapSession;
+use neverlight_mail_core::jmap::JmapSession;
 use neverlight_mail_core::models::{AttachmentData, Folder, MessageSummary};
+use neverlight_mail_core::{EnvelopeHash, FlagOp, MailboxHash};
 use neverlight_mail_core::setup::SetupModel;
 use neverlight_mail_core::store::CacheHandle;
 
@@ -101,12 +103,84 @@ pub struct PendingMoveIntent {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol-agnostic session wrapper
+// ---------------------------------------------------------------------------
+
+/// Wraps either an IMAP or JMAP session behind a uniform interface.
+/// All dispatch sites use this instead of reaching for ImapSession directly.
+#[derive(Clone, Debug)]
+pub enum MailSession {
+    Imap(Arc<ImapSession>),
+    Jmap(Arc<JmapSession>),
+}
+
+impl MailSession {
+    pub async fn fetch_folders(&self) -> Result<Vec<Folder>, String> {
+        match self {
+            Self::Imap(s) => s.fetch_folders().await,
+            Self::Jmap(s) => s.fetch_folders().await,
+        }
+    }
+
+    pub async fn fetch_messages(
+        &self,
+        mailbox_hash: MailboxHash,
+    ) -> Result<Vec<MessageSummary>, String> {
+        match self {
+            Self::Imap(s) => s.fetch_messages(mailbox_hash).await,
+            Self::Jmap(s) => s.fetch_messages(mailbox_hash).await,
+        }
+    }
+
+    pub async fn set_flags(
+        &self,
+        envelope_hash: EnvelopeHash,
+        mailbox_hash: MailboxHash,
+        flags: Vec<FlagOp>,
+    ) -> Result<(), String> {
+        match self {
+            Self::Imap(s) => s.set_flags(envelope_hash, mailbox_hash, flags).await,
+            Self::Jmap(s) => s.set_flags(envelope_hash, mailbox_hash, flags).await,
+        }
+    }
+
+    pub async fn move_messages(
+        &self,
+        envelope_hash: EnvelopeHash,
+        source_mailbox_hash: MailboxHash,
+        destination_mailbox_hash: MailboxHash,
+    ) -> Result<(), String> {
+        match self {
+            Self::Imap(s) => {
+                s.move_messages(envelope_hash, source_mailbox_hash, destination_mailbox_hash)
+                    .await
+            }
+            Self::Jmap(s) => {
+                s.move_messages(envelope_hash, source_mailbox_hash, destination_mailbox_hash)
+                    .await
+            }
+        }
+    }
+
+    pub async fn fetch_body(
+        &self,
+        envelope_hash: EnvelopeHash,
+    ) -> Result<(String, String, Vec<AttachmentData>), String> {
+        match self {
+            Self::Imap(s) => s.fetch_body(envelope_hash).await,
+            Self::Jmap(s) => s.fetch_body(envelope_hash).await,
+        }
+    }
+
+}
+
+// ---------------------------------------------------------------------------
 // Per-account state
 // ---------------------------------------------------------------------------
 
 pub struct AccountState {
     pub config: AccountConfig,
-    pub session: Option<Arc<ImapSession>>,
+    pub session: Option<MailSession>,
     pub conn_state: ConnectionState,
     pub folders: Vec<Folder>,
     pub folder_map: HashMap<String, u64>,
@@ -285,7 +359,7 @@ pub struct AppModel {
 pub enum Message {
     AccountConnected {
         account_id: AccountId,
-        result: Result<Arc<ImapSession>, String>,
+        result: Result<MailSession, String>,
     },
 
     SelectFolder(usize, usize), // (account_idx, folder_idx)
@@ -427,6 +501,7 @@ pub enum Message {
     ToggleAccountCollapse(usize),
 
     // Setup dialog messages
+    SetupProtocolChanged(usize),
     SetupLabelChanged(String),
     SetupServerChanged(String),
     SetupPortChanged(String),

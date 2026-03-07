@@ -1,7 +1,6 @@
 use cosmic::app::Task;
 use futures::future::{AbortHandle, Abortable};
 use neverlight_mail_core::MailboxHash;
-use neverlight_mail_core::imap::ImapSession;
 use neverlight_mail_core::store::DEFAULT_PAGE_SIZE;
 use std::time::{Duration, Instant};
 
@@ -831,15 +830,16 @@ impl AppModel {
                     if matches!(acct.conn_state, ConnectionState::Connecting | ConnectionState::Syncing) {
                         return Task::none();
                     }
+                    // Ignore stale delayed reconnect tasks once account is already healthy.
+                    if acct.session.is_some() && matches!(acct.conn_state, ConnectionState::Connected) {
+                        return Task::none();
+                    }
                     acct.session = None;
                     acct.conn_state = ConnectionState::Connecting;
-                    let config = acct.config.to_imap_config();
+                    let config = acct.config.clone();
                     let aid = account_id.clone();
                     self.status_message = format!("{}: Reconnecting...", acct.config.label);
-                    return cosmic::task::future(async move {
-                        let result = ImapSession::connect(config).await;
-                        Message::AccountConnected { account_id: aid, result }
-                    });
+                    return super::connect_account(config, aid);
                 }
             }
 

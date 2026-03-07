@@ -1,88 +1,96 @@
-use std::sync::Arc;
-
 use cosmic::app::Task;
 use futures::{SinkExt, StreamExt};
 use neverlight_mail_core::{BackendEvent, RefreshEventKind, Flag};
-use neverlight_mail_core::imap::ImapSession;
 use neverlight_mail_core::store;
 
-use super::{AppModel, ConnectionState, ImapWatchEvent, Message, MessageIdentity};
+use super::{AppModel, ConnectionState, ImapWatchEvent, MailSession, Message, MessageIdentity};
 
-pub(super) fn imap_watch_stream(
-    session: Arc<ImapSession>,
+pub(super) fn mail_watch_stream(
+    session: MailSession,
 ) -> impl futures::Stream<Item = ImapWatchEvent> {
     cosmic::iced_futures::stream::channel(50, move |mut output| async move {
-        match session.watch().await {
-            Ok(stream) => {
-                let mut stream = std::pin::pin!(stream);
+        // Dispatch to the correct backend's watch stream.
+        // Both return impl Stream with the same Item type, so we handle
+        // them in separate branches that share the same event loop body.
+        macro_rules! run_watch {
+            ($stream:expr) => {
+                let mut stream = std::pin::pin!($stream);
                 while let Some(event) = stream.next().await {
-                    match event {
-                        Ok(BackendEvent::Refresh(rev)) => {
-                            match rev.kind {
-                                RefreshEventKind::Create(envelope) => {
-                                    let from = envelope
-                                        .from()
-                                        .iter()
-                                        .map(|a| a.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", ");
-                                    let _ = output
-                                        .send(ImapWatchEvent::NewMessage {
-                                            mailbox_hash: rev.mailbox_hash.0,
-                                            envelope_hash: envelope.hash().0,
-                                            subject: envelope.subject().to_string(),
-                                            from,
-                                        })
-                                        .await;
-                                }
-                                RefreshEventKind::Remove(envelope_hash) => {
-                                    let _ = output
-                                        .send(ImapWatchEvent::MessageRemoved {
-                                            mailbox_hash: rev.mailbox_hash.0,
-                                            envelope_hash: envelope_hash.0,
-                                        })
-                                        .await;
-                                }
-                                RefreshEventKind::NewFlags(envelope_hash, (flag, _tags)) => {
-                                    let is_read = flag.contains(Flag::SEEN);
-                                    let is_starred = flag.contains(Flag::FLAGGED);
-                                    let flags = store::flags_to_u8(is_read, is_starred);
-                                    let _ = output
-                                        .send(ImapWatchEvent::FlagsChanged {
-                                            mailbox_hash: rev.mailbox_hash.0,
-                                            envelope_hash: envelope_hash.0,
-                                            flags,
-                                        })
-                                        .await;
-                                }
-                                RefreshEventKind::Rescan => {
-                                    let _ = output
-                                        .send(ImapWatchEvent::Rescan)
-                                        .await;
-                                }
-                                other => {
-                                    log::debug!(
-                                        "Unhandled IMAP watch event kind: {:?}",
-                                        other
-                                    );
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            let _ = output
-                                .send(ImapWatchEvent::WatchError(e.to_string()))
-                                .await;
-                        }
+                    if let Some(evt) = map_backend_event(event) {
+                        let _ = output.send(evt).await;
                     }
                 }
-            }
-            Err(e) => {
-                let _ = output.send(ImapWatchEvent::WatchError(e)).await;
-            }
+            };
         }
+
+        let watch_result: Result<(), String> = match &session {
+            MailSession::Imap(s) => match s.watch().await {
+                Ok(stream) => {
+                    run_watch!(stream);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            },
+            MailSession::Jmap(s) => match s.watch().await {
+                Ok(stream) => {
+                    run_watch!(stream);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            },
+        };
+
+        if let Err(e) = watch_result {
+            let _ = output.send(ImapWatchEvent::WatchError(e)).await;
+        }
+
         let _ = output.send(ImapWatchEvent::WatchEnded).await;
     })
+}
+
+/// Map a single backend event to an ImapWatchEvent (or None to skip).
+fn map_backend_event(
+    event: Result<BackendEvent, impl std::fmt::Display>,
+) -> Option<ImapWatchEvent> {
+    match event {
+        Ok(BackendEvent::Refresh(rev)) => match rev.kind {
+            RefreshEventKind::Create(envelope) => {
+                let from = envelope
+                    .from()
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(ImapWatchEvent::NewMessage {
+                    mailbox_hash: rev.mailbox_hash.0,
+                    envelope_hash: envelope.hash().0,
+                    subject: envelope.subject().to_string(),
+                    from,
+                })
+            }
+            RefreshEventKind::Remove(envelope_hash) => Some(ImapWatchEvent::MessageRemoved {
+                mailbox_hash: rev.mailbox_hash.0,
+                envelope_hash: envelope_hash.0,
+            }),
+            RefreshEventKind::NewFlags(envelope_hash, (flag, _tags)) => {
+                let is_read = flag.contains(Flag::SEEN);
+                let is_starred = flag.contains(Flag::FLAGGED);
+                let flags = store::flags_to_u8(is_read, is_starred);
+                Some(ImapWatchEvent::FlagsChanged {
+                    mailbox_hash: rev.mailbox_hash.0,
+                    envelope_hash: envelope_hash.0,
+                    flags,
+                })
+            }
+            RefreshEventKind::Rescan => Some(ImapWatchEvent::Rescan),
+            other => {
+                log::debug!("Unhandled watch event kind: {:?}", other);
+                None
+            }
+        },
+        Ok(_) => None,
+        Err(e) => Some(ImapWatchEvent::WatchError(e.to_string())),
+    }
 }
 
 impl AppModel {
@@ -267,7 +275,7 @@ impl AppModel {
             }
 
             Message::ImapEvent(ref account_id, ImapWatchEvent::WatchError(ref e)) => {
-                log::warn!("IMAP watch error for account: {}", e);
+                log::warn!("Watch error for account: {}", e);
                 if let Some(idx) = self.account_index(account_id) {
                     self.accounts[idx].conn_state = ConnectionState::Error(e.clone());
                     self.accounts[idx].last_error = Some(e.clone());
@@ -280,7 +288,7 @@ impl AppModel {
                 }
             }
             Message::ImapEvent(ref account_id, ImapWatchEvent::WatchEnded) => {
-                log::info!("IMAP watch stream ended for account");
+                log::info!("Watch stream ended for account");
                 if let Some(idx) = self.account_index(account_id) {
                     self.accounts[idx].conn_state = ConnectionState::Error("Connection lost".into());
                     self.accounts[idx].last_error = Some("Connection lost".into());
