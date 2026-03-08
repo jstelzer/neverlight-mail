@@ -41,16 +41,22 @@ impl AppModel {
             }
 
             Message::SetupSubmit => {
-                // Validate via SetupModel
-                if let Some(err) = self.setup().validate() {
-                    self.setup_mut().error = Some(err);
-                    return Task::none();
-                }
-
                 let is_token_only = matches!(
                     self.setup().request,
                     SetupRequest::TokenOnly { .. }
                 );
+
+                // TokenOnly: just check token is present (other fields are from config)
+                // Full/Edit: validate all fields
+                if is_token_only {
+                    if self.setup().token.is_empty() {
+                        self.setup_mut().error = Some("API token is required".into());
+                        return Task::none();
+                    }
+                } else if let Some(err) = self.setup().validate() {
+                    self.setup_mut().error = Some(err);
+                    return Task::none();
+                }
 
                 // Extract validated values
                 let jmap_url = self.setup().jmap_url.trim().to_string();
