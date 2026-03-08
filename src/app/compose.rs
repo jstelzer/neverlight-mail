@@ -334,12 +334,7 @@ impl AppModel {
                         }
                     };
 
-                    let identity = identities
-                        .iter()
-                        .find(|id| id.email == from_addr)
-                        .or_else(|| identities.first());
-
-                    let Some(identity) = identity else {
+                    let Some(identity) = submit::find_identity_for_address(&identities, &from_addr) else {
                         return Message::SendComplete(Err(
                             "No sender identity found".into()
                         ));
