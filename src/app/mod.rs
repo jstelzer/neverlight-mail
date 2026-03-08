@@ -7,6 +7,7 @@ mod navigation;
 mod search;
 mod setup;
 mod sync;
+mod sync_apply;
 mod types;
 mod watch;
 
