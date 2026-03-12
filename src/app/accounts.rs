@@ -133,6 +133,8 @@ impl AppModel {
         self.preview_markdown.clear();
         self.preview_attachments.clear();
         self.preview_image_handles.clear();
+        self.conversation.clear();
+        self.active_conversation_id = None;
         self.collapsed_threads.clear();
         self.recompute_visible();
     }

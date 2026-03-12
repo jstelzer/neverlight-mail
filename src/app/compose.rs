@@ -74,12 +74,25 @@ impl AppModel {
                 if self.setup_model.is_some() || self.compose_phase.is_open() {
                     return Task::none();
                 }
-                let Some(index) = self.selected_message else {
-                    return Task::none();
+                let (msg, body_text) = if !self.conversation.is_empty() {
+                    let active_id = self.active_conversation_id.as_ref();
+                    let entry = active_id.and_then(|id| {
+                        self.conversation.iter().find(|e| &e.email_id == id)
+                    });
+                    let Some(entry) = entry else {
+                        return Task::none();
+                    };
+                    (entry.summary.clone(), entry.plain_body.clone())
+                } else {
+                    let Some(index) = self.selected_message else {
+                        return Task::none();
+                    };
+                    let Some(msg) = self.messages.get(index) else {
+                        return Task::none();
+                    };
+                    (msg.clone(), self.preview_body.clone())
                 };
-                let Some(msg) = self.messages.get(index) else {
-                    return Task::none();
-                };
+
                 self.compose_mode = ComposeMode::Reply;
                 self.compose_account = self
                     .account_index(&msg.account_id)
@@ -93,7 +106,7 @@ impl AppModel {
                     format!("Re: {subj}")
                 };
 
-                let quoted = quote_body(&self.preview_body, &msg.from, &msg.date);
+                let quoted = quote_body(&body_text, &msg.from, &msg.date);
                 self.compose_body =
                     text_editor::Content::with_text(&format!("\n\n{quoted}"));
 
@@ -112,12 +125,33 @@ impl AppModel {
                 if self.setup_model.is_some() || self.compose_phase.is_open() {
                     return Task::none();
                 }
-                let Some(index) = self.selected_message else {
-                    return Task::none();
+                let (msg, body_text, fwd_attachments) = if !self.conversation.is_empty() {
+                    let active_id = self.active_conversation_id.as_ref();
+                    let entry = active_id.and_then(|id| {
+                        self.conversation.iter().find(|e| &e.email_id == id)
+                    });
+                    let Some(entry) = entry else {
+                        return Task::none();
+                    };
+                    (
+                        entry.summary.clone(),
+                        entry.plain_body.clone(),
+                        entry.attachments.clone(),
+                    )
+                } else {
+                    let Some(index) = self.selected_message else {
+                        return Task::none();
+                    };
+                    let Some(msg) = self.messages.get(index) else {
+                        return Task::none();
+                    };
+                    (
+                        msg.clone(),
+                        self.preview_body.clone(),
+                        self.preview_attachments.clone(),
+                    )
                 };
-                let Some(msg) = self.messages.get(index) else {
-                    return Task::none();
-                };
+
                 self.compose_mode = ComposeMode::Forward;
                 self.compose_account = self
                     .account_index(&msg.account_id)
@@ -132,7 +166,7 @@ impl AppModel {
                 };
 
                 let fwd = forward_body(
-                    &self.preview_body,
+                    &body_text,
                     &msg.from,
                     &msg.date,
                     &msg.subject,
@@ -142,7 +176,7 @@ impl AppModel {
 
                 self.compose_in_reply_to = None;
                 self.compose_references = None;
-                self.compose_attachments = self.preview_attachments.clone();
+                self.compose_attachments = fwd_attachments;
                 self.compose_error = None;
                 self.compose_phase = ComposePhase::Open;
                 self.refresh_compose_cache();
@@ -323,6 +357,8 @@ impl AppModel {
                     .filter(|s| !s.is_empty())
                     .collect();
                 let subject = self.compose_subject.clone();
+                let in_reply_to = self.compose_in_reply_to.clone();
+                let references = self.compose_references.clone();
 
                 return cosmic::task::future(async move {
                     // Fetch identities to find the right one
@@ -351,6 +387,8 @@ impl AppModel {
                         html_body: None,
                         drafts_mailbox_id: &drafts_mailbox_id,
                         sent_mailbox_id: &sent_mailbox_id,
+                        in_reply_to: in_reply_to.as_deref(),
+                        references: references.as_deref(),
                     };
 
                     match submit::send(&client, &req).await {

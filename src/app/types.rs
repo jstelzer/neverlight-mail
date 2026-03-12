@@ -14,6 +14,18 @@ use neverlight_mail_core::store::CacheHandle;
 use crate::dnd_models::DraggedFiles;
 use crate::ui::compose_dialog::ComposeMode;
 
+#[derive(Debug, Clone)]
+pub struct ConversationEntry {
+    pub email_id: String,
+    pub summary: MessageSummary,
+    pub markdown_items: Vec<markdown::Item>,
+    pub plain_body: String,
+    pub attachments: Vec<AttachmentData>,
+    pub image_handles: Vec<Option<image::Handle>>,
+    pub is_sent: bool,
+    pub loaded: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneKind {
     Sidebar,
@@ -252,6 +264,11 @@ pub struct AppModel {
     pub(super) preview_attachments: Vec<AttachmentData>,
     pub(super) preview_image_handles: Vec<Option<image::Handle>>,
 
+    /// Conversation view: all messages in the selected thread, bodies loading progressively.
+    pub(super) conversation: Vec<ConversationEntry>,
+    /// The email_id of the "active" message within the conversation (reply/forward target).
+    pub(super) active_conversation_id: Option<String>,
+
     /// Thread IDs that are currently collapsed (children hidden)
     pub(super) collapsed_threads: HashSet<String>,
     /// Maps visible row positions → real indices into `messages`
@@ -370,6 +387,21 @@ pub enum Message {
 
     SaveAttachment(usize),
     SaveAttachmentComplete(Result<String, String>),
+
+    ThreadLoaded {
+        thread_id: String,
+        email_id: String,
+        epoch: u64,
+        result: Result<Vec<MessageSummary>, String>,
+    },
+    ConversationBodyLoaded {
+        thread_id: String,
+        email_id: String,
+        epoch: u64,
+        result: Result<(String, String, Vec<AttachmentData>), String>,
+    },
+    SetActiveConversation(String),
+    SaveConversationAttachment { email_id: String, index: usize },
 
     // Cache-first messages
     CachedFoldersLoaded {

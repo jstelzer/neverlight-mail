@@ -106,6 +106,8 @@ impl cosmic::Application for AppModel {
             preview_markdown: Vec::new(),
             preview_attachments: Vec::new(),
             preview_image_handles: Vec::new(),
+            conversation: Vec::new(),
+            active_conversation_id: None,
             collapsed_threads: HashSet::new(),
             visible_indices: Vec::new(),
             thread_sizes: HashMap::new(),
@@ -438,6 +440,8 @@ impl cosmic::Application for AppModel {
                         selected_msg,
                         &self.preview_attachments,
                         &self.preview_image_handles,
+                        &self.conversation,
+                        self.active_conversation_id.as_deref(),
                     )
                 }
             };
@@ -532,6 +536,10 @@ impl cosmic::Application for AppModel {
             Message::ViewBody(_)
             | Message::BodyDeferred { .. }
             | Message::BodyLoaded { .. }
+            | Message::ThreadLoaded { .. }
+            | Message::ConversationBodyLoaded { .. }
+            | Message::SetActiveConversation(_)
+            | Message::SaveConversationAttachment { .. }
             | Message::LinkClicked(_)
             | Message::CopyBody
             | Message::SaveAttachment(_)
