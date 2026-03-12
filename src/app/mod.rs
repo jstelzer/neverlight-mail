@@ -164,6 +164,8 @@ impl cosmic::Application for AppModel {
             setup_model: None,
             setup_password_visible: false,
             confirm_delete_account_id: None,
+            oauth_phase: OAuthSetupPhase::Inactive,
+            oauth_error: None,
 
             folder_drag_target: None,
             pending_body: None,
@@ -503,7 +505,9 @@ impl cosmic::Application for AppModel {
             | Message::SetupPasswordVisibilityToggled
             | Message::SetupEmailAddressesChanged(_)
             | Message::SetupSubmit
-            | Message::SetupCancel => self.handle_setup(message),
+            | Message::SetupCancel
+            | Message::SetupOAuthStart
+            | Message::SetupOAuthTokensReceived(_) => self.handle_setup(message),
 
             // Account management
             Message::AccountAdd

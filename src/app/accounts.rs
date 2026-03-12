@@ -319,7 +319,7 @@ impl AppModel {
 
     /// Save the current account list to the multi-account config file.
     pub(super) fn save_multi_account_config(&self) -> Result<(), String> {
-        use neverlight_mail_core::config::{FileAccountConfig, MultiAccountFileConfig, PasswordBackend};
+        use neverlight_mail_core::config::{AuthBackend, FileAccountConfig, MultiAccountFileConfig};
 
         let accounts: Vec<FileAccountConfig> = self
             .accounts
@@ -329,7 +329,7 @@ impl AppModel {
                 label: a.config.label.clone(),
                 jmap_url: a.config.jmap_url.clone(),
                 username: a.config.username.clone(),
-                auth_token: PasswordBackend::Keyring,
+                auth: AuthBackend::Keyring,
                 email_addresses: a.config.email_addresses.clone(),
                 capabilities: a.config.capabilities.clone(),
             })

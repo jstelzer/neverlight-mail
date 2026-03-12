@@ -3,11 +3,13 @@ use cosmic::widget;
 use cosmic::Element;
 
 use neverlight_mail_core::config::{
-    AccountCapabilities, AccountConfig, FileAccountConfig, MultiAccountFileConfig, new_account_id,
+    AccountCapabilities, AccountConfig, AuthBackend, AuthMethod, FileAccountConfig,
+    MultiAccountFileConfig, new_account_id,
 };
+use neverlight_mail_core::oauth::OAuthRedirectHandler;
 use neverlight_mail_core::setup::{self, FieldId, SetupInput, SetupRequest};
 
-use super::{AccountState, AppModel, ConnectionState, Message};
+use super::{AccountState, AppModel, ConnectionState, Message, OAuthSetupPhase, OAuthTokenResult};
 
 impl AppModel {
     /// Access the setup model, panicking if absent. Only call when you've
@@ -41,119 +43,13 @@ impl AppModel {
             }
 
             Message::SetupSubmit => {
-                let is_token_only = matches!(
-                    self.setup().request,
-                    SetupRequest::TokenOnly { .. }
-                );
-
-                // TokenOnly: just check token is present (other fields are from config)
-                // Full/Edit: validate all fields
-                if is_token_only {
-                    if self.setup().token.is_empty() {
-                        self.setup_mut().error = Some("API token is required".into());
-                        return Task::none();
-                    }
-                } else if let Some(err) = self.setup().validate() {
-                    self.setup_mut().error = Some(err);
-                    return Task::none();
-                }
-
-                // Extract validated values
-                let jmap_url = self.setup().jmap_url.trim().to_string();
-                let username = self.setup().username.trim().to_string();
-                let token = self.setup().token.clone();
-                let label = if self.setup().label.trim().is_empty() {
-                    username.clone()
-                } else {
-                    self.setup().label.trim().to_string()
-                };
-
-                let email_addresses: Vec<String> = self.setup().email
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
-                // Determine account ID from request
-                let account_id = match &self.setup().request {
-                    SetupRequest::Edit { account_id } => account_id.clone(),
-                    SetupRequest::TokenOnly { account_id, .. } => account_id.clone(),
-                    SetupRequest::Full => new_account_id(),
-                };
-
-                // Store token in keyring
-                let token_backend = if is_token_only || !token.is_empty() {
-                    setup::store_token(&username, &jmap_url, &token)
-                } else {
-                    // Edit mode: preserve existing token
-                    MultiAccountFileConfig::load()
-                        .ok()
-                        .flatten()
-                        .and_then(|m| m.accounts.iter().find(|a| a.id == account_id).map(|a| a.auth_token.clone()))
-                        .unwrap_or_else(|| setup::store_token(&username, &jmap_url, &token))
-                };
-
-                // Build file account config
-                let fac = FileAccountConfig {
-                    id: account_id.clone(),
-                    label: label.clone(),
-                    jmap_url: jmap_url.clone(),
-                    username: username.clone(),
-                    auth_token: token_backend,
-                    email_addresses: email_addresses.clone(),
-                    capabilities: AccountCapabilities::default(),
-                };
-
-                // Update or add to multi-account config
-                let mut multi = MultiAccountFileConfig::load()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(MultiAccountFileConfig { accounts: Vec::new() });
-
-                if let Some(pos) = multi.accounts.iter().position(|a| a.id == account_id) {
-                    multi.accounts[pos] = fac;
-                } else {
-                    multi.accounts.push(fac);
-                }
-                if let Err(e) = multi.save() {
-                    log::error!("Failed to save config: {}", e);
-                    self.setup_mut().error = Some(format!("Failed to save config: {e}"));
-                    return Task::none();
-                }
-
-                // Build runtime config
-                let account_config = AccountConfig {
-                    id: account_id.clone(),
-                    label: label.clone(),
-                    jmap_url,
-                    username,
-                    token,
-                    email_addresses,
-                    capabilities: AccountCapabilities::default(),
-                };
-
-                let connect_config = account_config.clone();
-
-                // Update or add AccountState
-                if let Some(idx) = self.account_index(&account_id) {
-                    self.accounts[idx].config = account_config;
-                    self.accounts[idx].conn_state = ConnectionState::Connecting;
-                    self.accounts[idx].client = None;
-                } else {
-                    let mut acct = AccountState::new(account_config);
-                    acct.conn_state = ConnectionState::Connecting;
-                    self.accounts.push(acct);
-                }
-
-                self.setup_model = None;
-                self.status_message = format!("{}: Connecting...", label);
-
-                let aid = account_id.clone();
-                return super::connect_account(connect_config, aid);
+                return self.handle_setup_submit();
             }
 
             Message::SetupCancel => {
                 self.setup_model = None;
+                self.oauth_phase = OAuthSetupPhase::Inactive;
+                self.oauth_error = None;
                 if self.accounts.is_empty() {
                     self.status_message = "Not connected — no cached data".into();
                 } else {
@@ -162,9 +58,279 @@ impl AppModel {
                 }
             }
 
+            // OAuth: single-shot flow (discover → register → browser → exchange)
+            Message::SetupOAuthStart => {
+                return self.handle_oauth_start();
+            }
+            Message::SetupOAuthTokensReceived(result) => {
+                return self.handle_oauth_tokens_received(result);
+            }
+
             _ => {}
         }
         Task::none()
+    }
+
+    fn handle_setup_submit(&mut self) -> Task<Message> {
+        let is_token_only = matches!(
+            self.setup().request,
+            SetupRequest::TokenOnly { .. }
+        );
+
+        if is_token_only {
+            if self.setup().token.is_empty() {
+                self.setup_mut().error = Some("API token is required".into());
+                return Task::none();
+            }
+        } else if let Some(err) = self.setup().validate() {
+            self.setup_mut().error = Some(err);
+            return Task::none();
+        }
+
+        let jmap_url = self.setup().jmap_url.trim().to_string();
+        let username = self.setup().username.trim().to_string();
+        let token = self.setup().token.clone();
+        let label = if self.setup().label.trim().is_empty() {
+            username.clone()
+        } else {
+            self.setup().label.trim().to_string()
+        };
+
+        let email_addresses: Vec<String> = self.setup().email
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let account_id = match &self.setup().request {
+            SetupRequest::Edit { account_id } => account_id.clone(),
+            SetupRequest::TokenOnly { account_id, .. } => account_id.clone(),
+            SetupRequest::Full => new_account_id(),
+        };
+
+        let token_backend = if is_token_only || !token.is_empty() {
+            setup::store_token(&username, &jmap_url, &token)
+        } else {
+            MultiAccountFileConfig::load()
+                .ok()
+                .flatten()
+                .and_then(|m| m.accounts.iter().find(|a| a.id == account_id).map(|a| a.auth.clone()))
+                .unwrap_or_else(|| setup::store_token(&username, &jmap_url, &token))
+        };
+
+        let fac = FileAccountConfig {
+            id: account_id.clone(),
+            label: label.clone(),
+            jmap_url: jmap_url.clone(),
+            username: username.clone(),
+            auth: token_backend,
+            email_addresses: email_addresses.clone(),
+            capabilities: AccountCapabilities::default(),
+        };
+
+        let mut multi = MultiAccountFileConfig::load()
+            .ok()
+            .flatten()
+            .unwrap_or(MultiAccountFileConfig { accounts: Vec::new() });
+
+        if let Some(pos) = multi.accounts.iter().position(|a| a.id == account_id) {
+            multi.accounts[pos] = fac;
+        } else {
+            multi.accounts.push(fac);
+        }
+        if let Err(e) = multi.save() {
+            log::error!("Failed to save config: {}", e);
+            self.setup_mut().error = Some(format!("Failed to save config: {e}"));
+            return Task::none();
+        }
+
+        let account_config = AccountConfig {
+            id: account_id.clone(),
+            label: label.clone(),
+            jmap_url,
+            username,
+            auth: AuthMethod::AppPassword { token },
+            email_addresses,
+            capabilities: AccountCapabilities::default(),
+        };
+
+        self.finalize_setup(account_id, label, account_config)
+    }
+
+    /// Start full OAuth flow: discover → register → browser auth → token exchange.
+    fn handle_oauth_start(&mut self) -> Task<Message> {
+        let jmap_url = self.setup().jmap_url.trim().to_string();
+
+        if jmap_url.is_empty() || !jmap_url.starts_with("https://") {
+            self.setup_mut().error = Some("JMAP URL required for OAuth discovery".into());
+            return Task::none();
+        }
+
+        self.oauth_phase = OAuthSetupPhase::Discovering;
+        self.oauth_error = None;
+        self.setup_mut().error = None;
+
+        cosmic::task::future(async move {
+            let result: Result<OAuthTokenResult, String> = async {
+                // Bind redirect listener first (OS-assigned port)
+                let redirect =
+                    neverlight_mail_core::oauth::LocalServerRedirect::bind().await
+                        .map_err(|e| e.to_string())?;
+
+                let redirect_uri = redirect.redirect_uri();
+
+                // Discover + register
+                let flow = neverlight_mail_core::oauth::OAuthFlow::discover_and_register(
+                    &jmap_url,
+                    &redirect_uri,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+
+                // Open browser and wait for authorization
+                let token_set = flow.authorize(&redirect).await.map_err(|e| e.to_string())?;
+
+                Ok(OAuthTokenResult {
+                    issuer: flow.issuer().to_string(),
+                    client_id: flow.client_id().to_string(),
+                    token_endpoint: flow.token_endpoint().to_string(),
+                    resource: flow.resource().to_string(),
+                    access_token: token_set.access_token,
+                    refresh_token: token_set.refresh_token,
+                })
+            }
+            .await;
+
+            Message::SetupOAuthTokensReceived(result)
+        })
+    }
+
+    /// Tokens received — save config and connect.
+    fn handle_oauth_tokens_received(
+        &mut self,
+        result: Result<OAuthTokenResult, String>,
+    ) -> Task<Message> {
+        let tokens = match result {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("OAuth flow failed: {}", e);
+                self.oauth_phase = OAuthSetupPhase::Inactive;
+                self.oauth_error = Some(e.clone());
+                if let Some(m) = self.setup_model.as_mut() {
+                    m.error = Some(format!("OAuth failed: {e}"));
+                }
+                return Task::none();
+            }
+        };
+
+        let jmap_url = self.setup().jmap_url.trim().to_string();
+        let username = self.setup().username.trim().to_string();
+        let label = if self.setup().label.trim().is_empty() {
+            username.clone()
+        } else {
+            self.setup().label.trim().to_string()
+        };
+        let email_addresses: Vec<String> = self.setup().email
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let account_id = match &self.setup().request {
+            SetupRequest::Edit { account_id } => account_id.clone(),
+            SetupRequest::TokenOnly { account_id, .. } => account_id.clone(),
+            SetupRequest::Full => new_account_id(),
+        };
+
+        // Store refresh token in keyring
+        let refresh_token_plaintext =
+            match neverlight_mail_core::keyring::set_oauth_refresh(&account_id, &tokens.refresh_token) {
+                Ok(()) => None,
+                Err(e) => {
+                    log::warn!("Keyring unavailable for OAuth ({}), using plaintext", e);
+                    Some(tokens.refresh_token.clone())
+                }
+            };
+
+        let fac = FileAccountConfig {
+            id: account_id.clone(),
+            label: label.clone(),
+            jmap_url: jmap_url.clone(),
+            username: username.clone(),
+            auth: AuthBackend::OAuth {
+                issuer: tokens.issuer.clone(),
+                client_id: tokens.client_id.clone(),
+                resource: tokens.resource.clone(),
+                token_endpoint: tokens.token_endpoint.clone(),
+                refresh_token_plaintext,
+            },
+            email_addresses: email_addresses.clone(),
+            capabilities: AccountCapabilities::default(),
+        };
+
+        let mut multi = MultiAccountFileConfig::load()
+            .ok()
+            .flatten()
+            .unwrap_or(MultiAccountFileConfig { accounts: Vec::new() });
+
+        if let Some(pos) = multi.accounts.iter().position(|a| a.id == account_id) {
+            multi.accounts[pos] = fac;
+        } else {
+            multi.accounts.push(fac);
+        }
+        if let Err(e) = multi.save() {
+            log::error!("Failed to save OAuth config: {}", e);
+            if let Some(m) = self.setup_model.as_mut() {
+                m.error = Some(format!("Failed to save config: {e}"));
+            }
+            return Task::none();
+        }
+
+        let account_config = AccountConfig {
+            id: account_id.clone(),
+            label: label.clone(),
+            jmap_url,
+            username,
+            auth: AuthMethod::OAuth {
+                issuer: tokens.issuer,
+                client_id: tokens.client_id,
+                token_endpoint: tokens.token_endpoint,
+                refresh_token: tokens.refresh_token,
+                access_token: Some(tokens.access_token),
+                resource: tokens.resource,
+            },
+            email_addresses,
+            capabilities: AccountCapabilities::default(),
+        };
+
+        self.oauth_phase = OAuthSetupPhase::Inactive;
+        self.oauth_error = None;
+        self.finalize_setup(account_id, label, account_config)
+    }
+
+    /// Shared setup finalization: update AccountState, close dialog, start connecting.
+    fn finalize_setup(
+        &mut self,
+        account_id: String,
+        label: String,
+        account_config: AccountConfig,
+    ) -> Task<Message> {
+        let connect_config = account_config.clone();
+
+        if let Some(idx) = self.account_index(&account_id) {
+            self.accounts[idx].config = account_config;
+            self.accounts[idx].conn_state = ConnectionState::Connecting;
+            self.accounts[idx].client = None;
+        } else {
+            let mut acct = AccountState::new(account_config);
+            acct.conn_state = ConnectionState::Connecting;
+            self.accounts.push(acct);
+        }
+
+        self.setup_model = None;
+        self.status_message = format!("{}: Connecting...", label);
+
+        super::connect_account(connect_config, account_id)
     }
 
     pub(super) fn setup_dialog(&self) -> Element<'_, Message> {
@@ -192,6 +358,23 @@ impl AppModel {
                         .label("Username")
                         .on_input(Message::SetupUsernameChanged),
                 );
+
+            // OAuth sign-in button
+            let oauth_label = match self.oauth_phase {
+                OAuthSetupPhase::Inactive => "Sign in with browser",
+                OAuthSetupPhase::Discovering => "Signing in...",
+            };
+            let oauth_enabled = self.oauth_phase == OAuthSetupPhase::Inactive;
+            let mut oauth_btn = widget::button::standard(oauth_label);
+            if oauth_enabled {
+                oauth_btn = oauth_btn.on_press(Message::SetupOAuthStart);
+            }
+            controls = controls.push(oauth_btn);
+
+            // Divider text
+            controls = controls.push(
+                widget::text::caption("— or enter an app password manually —"),
+            );
         }
 
         controls = controls.push(
@@ -220,6 +403,11 @@ impl AppModel {
             }
         }
 
+        let error_text = self
+            .oauth_error
+            .as_deref()
+            .or(model.error.as_deref());
+
         let mut dialog = widget::dialog()
             .title(title)
             .control(controls)
@@ -230,8 +418,8 @@ impl AppModel {
                 widget::button::standard("Cancel").on_press(Message::SetupCancel),
             );
 
-        if let Some(ref err) = model.error {
-            dialog = dialog.body(err.as_str());
+        if let Some(err) = error_text {
+            dialog = dialog.body(err);
         }
 
         dialog.into()

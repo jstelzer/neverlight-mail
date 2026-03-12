@@ -327,6 +327,8 @@ pub struct AppModel {
     pub(super) setup_model: Option<SetupModel>,
     pub(super) setup_password_visible: bool,
     pub(super) confirm_delete_account_id: Option<AccountId>,
+    pub(super) oauth_phase: OAuthSetupPhase,
+    pub(super) oauth_error: Option<String>,
 
     // DnD state
     pub(super) folder_drag_target: Option<usize>,
@@ -494,4 +496,28 @@ pub enum Message {
     SetupPasswordVisibilityToggled,
     SetupSubmit,
     SetupCancel,
+
+    // OAuth flow messages
+    SetupOAuthStart,
+    SetupOAuthTokensReceived(Result<OAuthTokenResult, String>),
+}
+
+/// OAuth tokens received from the full browser-based flow.
+#[derive(Debug, Clone)]
+pub struct OAuthTokenResult {
+    pub issuer: String,
+    pub client_id: String,
+    pub token_endpoint: String,
+    pub resource: String,
+    pub access_token: String,
+    pub refresh_token: String,
+}
+
+/// OAuth setup progress phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthSetupPhase {
+    /// Not in OAuth flow.
+    Inactive,
+    /// Discovering OAuth metadata + registering client + waiting for browser.
+    Discovering,
 }
