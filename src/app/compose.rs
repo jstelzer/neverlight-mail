@@ -2,7 +2,7 @@ use cosmic::app::Task;
 use cosmic::dialog::file_chooser;
 use cosmic::widget::text_editor;
 
-use super::{AppModel, Message};
+use super::{AppModel, ComposePhase, Message};
 use neverlight_mail_core::models::AttachmentData;
 use neverlight_mail_core::submit::{self, SendRequest};
 
@@ -53,7 +53,7 @@ impl AppModel {
     pub(super) fn handle_compose(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ComposeNew => {
-                if self.setup_model.is_some() || self.show_compose_dialog {
+                if self.setup_model.is_some() || self.compose_phase.is_open() {
                     return Task::none();
                 }
                 self.compose_mode = ComposeMode::New;
@@ -66,13 +66,12 @@ impl AppModel {
                 self.compose_references = None;
                 self.compose_attachments.clear();
                 self.compose_error = None;
-                self.is_sending = false;
-                self.show_compose_dialog = true;
+                self.compose_phase = ComposePhase::Open;
                 self.refresh_compose_cache();
             }
 
             Message::ComposeReply => {
-                if self.setup_model.is_some() || self.show_compose_dialog {
+                if self.setup_model.is_some() || self.compose_phase.is_open() {
                     return Task::none();
                 }
                 let Some(index) = self.selected_message else {
@@ -105,13 +104,12 @@ impl AppModel {
                 ));
                 self.compose_attachments.clear();
                 self.compose_error = None;
-                self.is_sending = false;
-                self.show_compose_dialog = true;
+                self.compose_phase = ComposePhase::Open;
                 self.refresh_compose_cache();
             }
 
             Message::ComposeForward => {
-                if self.setup_model.is_some() || self.show_compose_dialog {
+                if self.setup_model.is_some() || self.compose_phase.is_open() {
                     return Task::none();
                 }
                 let Some(index) = self.selected_message else {
@@ -146,8 +144,7 @@ impl AppModel {
                 self.compose_references = None;
                 self.compose_attachments = self.preview_attachments.clone();
                 self.compose_error = None;
-                self.is_sending = false;
-                self.show_compose_dialog = true;
+                self.compose_phase = ComposePhase::Open;
                 self.refresh_compose_cache();
             }
 
@@ -314,7 +311,7 @@ impl AppModel {
                     return Task::none();
                 };
 
-                self.is_sending = true;
+                self.compose_phase = ComposePhase::Sending;
                 self.compose_error = None;
 
                 log::info!("JMAP send: from={}, to={}", from_addr, self.compose_to);
@@ -366,13 +363,11 @@ impl AppModel {
             }
 
             Message::ComposeCancel => {
-                self.show_compose_dialog = false;
-                self.is_sending = false;
+                self.compose_phase = ComposePhase::Closed;
             }
 
             Message::SendComplete(Ok(())) => {
-                self.show_compose_dialog = false;
-                self.is_sending = false;
+                self.compose_phase = ComposePhase::Closed;
                 self.compose_to.clear();
                 self.compose_subject.clear();
                 self.compose_body = text_editor::Content::new();
@@ -385,7 +380,7 @@ impl AppModel {
             }
 
             Message::SendComplete(Err(e)) => {
-                self.is_sending = false;
+                self.compose_phase = ComposePhase::Open;
                 self.compose_error = Some(format!("Send failed: {e}"));
                 log::error!("JMAP send failed: {e}");
             }

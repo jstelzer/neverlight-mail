@@ -126,11 +126,9 @@ impl cosmic::Application for AppModel {
             mutation_epoch: 0,
             flag_epoch: 0,
             body_epoch: 0,
-            refresh_in_flight: false,
-            refresh_pending: false,
+            refresh_phase: RefreshPhase::Idle,
             refresh_accounts_outstanding: HashSet::new(),
             refresh_started_at: None,
-            refresh_timeout_reported: false,
             mutation_in_flight_accounts: HashSet::new(),
             flag_in_flight_accounts: HashSet::new(),
             pending_move_intents: HashMap::new(),
@@ -145,11 +143,10 @@ impl cosmic::Application for AppModel {
             last_sync_at: None,
             last_refresh_at: None,
 
-            search_active: false,
+            search_phase: SearchPhase::Inactive,
             search_query: String::new(),
-            search_focused: false,
 
-            show_compose_dialog: false,
+            compose_phase: ComposePhase::Closed,
             compose_mode: ComposeMode::New,
             compose_account: 0,
             compose_from: 0,
@@ -161,7 +158,6 @@ impl cosmic::Application for AppModel {
             compose_attachments: Vec::new(),
             compose_error: None,
             compose_drag_hover: false,
-            is_sending: false,
             compose_account_labels: Vec::new(),
             compose_cached_from: Vec::new(),
 
@@ -250,7 +246,7 @@ impl cosmic::Application for AppModel {
         if self.setup_model.is_some() {
             return Some(self.setup_dialog());
         }
-        if self.show_compose_dialog {
+        if self.compose_phase.is_open() {
             return Some(crate::ui::compose_dialog::view(
                 crate::ui::compose_dialog::ComposeViewState {
                     mode: &self.compose_mode,
@@ -263,7 +259,7 @@ impl cosmic::Application for AppModel {
                     body: &self.compose_body,
                     attachments: &self.compose_attachments,
                     error: self.compose_error.as_deref(),
-                    is_sending: self.is_sending,
+                    is_sending: self.compose_phase == ComposePhase::Sending,
                     drag_hover: self.compose_drag_hover,
                 },
             ));
@@ -274,7 +270,7 @@ impl cosmic::Application for AppModel {
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subs = Vec::new();
 
-        if self.search_focused {
+        if self.search_phase.is_focused() {
             // When search input has focus, only intercept Escape.
             subs.push(cosmic::iced_futures::event::listen_raw(
                 |event, status, _| {
@@ -416,7 +412,7 @@ impl cosmic::Application for AppModel {
                         accounts: &self.accounts,
                         last_sync_at: self.last_sync_at,
                         last_refresh_at: self.last_refresh_at,
-                        refresh_in_flight: self.refresh_in_flight,
+                        refresh_in_flight: self.refresh_phase.is_in_flight(),
                     },
                 ),
                 PaneKind::MessageList => crate::ui::message_list::view(
@@ -424,10 +420,10 @@ impl cosmic::Application for AppModel {
                         messages: &self.messages,
                         visible_indices: &self.visible_indices,
                         selected: self.selected_message,
-                        has_more: self.has_more_messages && !self.search_active,
+                        has_more: self.has_more_messages && !self.search_phase.is_active(),
                         collapsed_threads: &self.collapsed_threads,
                         thread_sizes: &self.thread_sizes,
-                        search_active: self.search_active,
+                        search_active: self.search_phase.is_active(),
                         search_query: &self.search_query,
                     },
                 ),

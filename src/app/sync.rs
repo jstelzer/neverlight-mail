@@ -26,10 +26,6 @@ fn should_apply_cached_messages(
         && current.offset == incoming.offset
 }
 
-pub(super) fn should_queue_refresh(refresh_in_flight: bool) -> bool {
-    refresh_in_flight
-}
-
 pub(super) fn mark_refresh_account_complete(
     outstanding: &mut std::collections::HashSet<String>,
     account_id: &str,
@@ -198,8 +194,9 @@ impl AppModel {
 mod tests {
     use super::{
         mark_refresh_account_complete, refresh_has_timed_out, should_apply_cached_messages,
-        should_queue_refresh, CachedMessagesContext,
+        CachedMessagesContext,
     };
+    use crate::app::RefreshPhase;
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
 
@@ -242,8 +239,8 @@ mod tests {
 
     #[test]
     fn refresh_is_queued_when_in_flight() {
-        assert!(should_queue_refresh(true));
-        assert!(!should_queue_refresh(false));
+        assert!(RefreshPhase::InFlight { pending: false, timeout_reported: false }.is_in_flight());
+        assert!(!RefreshPhase::Idle.is_in_flight());
     }
 
     #[test]

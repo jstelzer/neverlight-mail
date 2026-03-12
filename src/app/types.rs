@@ -41,6 +41,80 @@ pub enum Phase {
     Error,
 }
 
+/// Compose dialog lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposePhase {
+    Closed,
+    Open,
+    Sending,
+}
+
+impl ComposePhase {
+    pub fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+}
+
+/// Search bar lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchPhase {
+    /// No search UI visible.
+    Inactive,
+    /// Search input visible, keyboard routes to input.
+    InputFocused,
+    /// Search results displayed, keyboard back to normal shortcuts.
+    Results,
+}
+
+impl SearchPhase {
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Inactive)
+    }
+
+    pub fn is_focused(self) -> bool {
+        matches!(self, Self::InputFocused)
+    }
+}
+
+/// Refresh lane coalescing state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshPhase {
+    Idle,
+    InFlight { pending: bool, timeout_reported: bool },
+}
+
+impl RefreshPhase {
+    pub fn is_in_flight(self) -> bool {
+        matches!(self, Self::InFlight { .. })
+    }
+
+    pub fn set_pending(&mut self) {
+        if let Self::InFlight { pending, .. } = self {
+            *pending = true;
+        }
+    }
+
+    pub fn take_pending(&mut self) -> bool {
+        if let Self::InFlight { pending, .. } = self {
+            let was = *pending;
+            *pending = false;
+            was
+        } else {
+            false
+        }
+    }
+
+    pub fn mark_timeout_reported(&mut self) {
+        if let Self::InFlight { timeout_reported, .. } = self {
+            *timeout_reported = true;
+        }
+    }
+
+    pub fn is_timeout_reported(self) -> bool {
+        matches!(self, Self::InFlight { timeout_reported: true, .. })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Move,
@@ -208,11 +282,9 @@ pub struct AppModel {
     pub(super) flag_epoch: u64,
     pub(super) body_epoch: u64,
     /// Refresh lane coalescing state.
-    pub(super) refresh_in_flight: bool,
-    pub(super) refresh_pending: bool,
+    pub(super) refresh_phase: RefreshPhase,
     pub(super) refresh_accounts_outstanding: HashSet<AccountId>,
     pub(super) refresh_started_at: Option<Instant>,
-    pub(super) refresh_timeout_reported: bool,
     pub(super) mutation_in_flight_accounts: HashSet<AccountId>,
     pub(super) flag_in_flight_accounts: HashSet<AccountId>,
     pub(super) pending_move_intents: HashMap<AccountId, PendingMoveIntent>,
@@ -231,12 +303,11 @@ pub struct AppModel {
     pub(super) last_refresh_at: Option<Instant>,
 
     // Search state
-    pub(super) search_active: bool,
+    pub(super) search_phase: SearchPhase,
     pub(super) search_query: String,
-    pub(super) search_focused: bool,
 
     // Compose dialog state
-    pub(super) show_compose_dialog: bool,
+    pub(super) compose_phase: ComposePhase,
     pub(super) compose_mode: ComposeMode,
     pub(super) compose_account: usize,
     pub(super) compose_from: usize,
@@ -248,7 +319,6 @@ pub struct AppModel {
     pub(super) compose_attachments: Vec<AttachmentData>,
     pub(super) compose_error: Option<String>,
     pub(super) compose_drag_hover: bool,
-    pub(super) is_sending: bool,
     // Cached for dialog() lifetime (updated when compose_account changes)
     pub(super) compose_account_labels: Vec<String>,
     pub(super) compose_cached_from: Vec<String>,

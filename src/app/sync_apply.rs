@@ -6,8 +6,8 @@ use neverlight_mail_core::models::Folder;
 use neverlight_mail_core::store::DEFAULT_PAGE_SIZE;
 use std::time::Instant;
 
-use super::{AppModel, ConnectionState, Message, Phase};
-use super::sync::{mark_refresh_account_complete, refresh_has_timed_out, should_queue_refresh, REFRESH_STUCK_TIMEOUT};
+use super::{AppModel, ConnectionState, Message, Phase, RefreshPhase};
+use super::sync::{mark_refresh_account_complete, refresh_has_timed_out, REFRESH_STUCK_TIMEOUT};
 
 impl AppModel {
     pub(super) fn handle_cached_folders_ok(
@@ -199,21 +199,21 @@ impl AppModel {
             return Task::none();
         }
         let mut refresh_completed = false;
-        if self.refresh_in_flight
+        let mut had_pending = false;
+        if self.refresh_phase.is_in_flight()
             && mark_refresh_account_complete(
                 &mut self.refresh_accounts_outstanding,
                 account_id.as_str(),
             )
         {
-            self.refresh_in_flight = false;
+            had_pending = self.refresh_phase.take_pending();
+            self.refresh_phase = RefreshPhase::Idle;
             self.refresh_started_at = None;
-            self.refresh_timeout_reported = false;
             self.phase = Phase::Idle;
             refresh_completed = true;
         }
         let Some(idx) = self.account_index(&account_id) else {
-            if refresh_completed && self.refresh_pending {
-                self.refresh_pending = false;
+            if refresh_completed && had_pending {
                 return self.dispatch(Message::Refresh);
             }
             return Task::none();
@@ -310,16 +310,14 @@ impl AppModel {
                     },
                 }
             });
-            if refresh_completed && self.refresh_pending {
-                self.refresh_pending = false;
+            if refresh_completed && had_pending {
                 let refresh_task = self.dispatch(Message::Refresh);
                 return cosmic::task::batch(vec![fetch_task, refresh_task]);
             }
             return fetch_task;
         }
 
-        if refresh_completed && self.refresh_pending {
-            self.refresh_pending = false;
+        if refresh_completed && had_pending {
             return self.dispatch(Message::Refresh);
         }
         Task::none()
@@ -361,17 +359,16 @@ impl AppModel {
                 Message::ForceReconnect(aid)
             }));
 
-            if self.refresh_in_flight
+            if self.refresh_phase.is_in_flight()
                 && mark_refresh_account_complete(
                     &mut self.refresh_accounts_outstanding,
                     account_id.as_str(),
                 )
             {
-                self.refresh_in_flight = false;
+                let had_pending = self.refresh_phase.take_pending();
+                self.refresh_phase = RefreshPhase::Idle;
                 self.refresh_started_at = None;
-                self.refresh_timeout_reported = false;
-                if self.refresh_pending {
-                    self.refresh_pending = false;
+                if had_pending {
                     tasks.push(self.dispatch(Message::Refresh));
                 }
             }
@@ -703,18 +700,18 @@ impl AppModel {
     }
 
     pub(super) fn handle_refresh(&mut self) -> Task<Message> {
-        if should_queue_refresh(self.refresh_in_flight) {
-            if refresh_has_timed_out(self.refresh_started_at, self.refresh_timeout_reported) {
-                self.refresh_timeout_reported = true;
+        if self.refresh_phase.is_in_flight() {
+            if refresh_has_timed_out(self.refresh_started_at, self.refresh_phase.is_timeout_reported()) {
+                self.refresh_phase.mark_timeout_reported();
                 self.refresh_timeout_count = self.refresh_timeout_count.saturating_add(1);
                 self.refresh_stuck_count = self.refresh_stuck_count.saturating_add(1);
-                self.refresh_in_flight = false;
+                self.refresh_phase = RefreshPhase::Idle;
                 self.refresh_started_at = None;
                 self.refresh_accounts_outstanding.clear();
                 self.refresh_epoch = self.refresh_epoch.saturating_add(1);
                 log::warn!("Refresh stuck ({}s timeout), force-clearing and restarting", REFRESH_STUCK_TIMEOUT.as_secs());
             } else {
-                self.refresh_pending = true;
+                self.refresh_phase.set_pending();
                 self.status_message = "Refresh queued...".into();
                 return Task::none();
             }
@@ -747,16 +744,15 @@ impl AppModel {
             }
         }
         if !tasks.is_empty() {
-            self.refresh_in_flight = true;
+            self.refresh_phase = RefreshPhase::InFlight { pending: false, timeout_reported: false };
             self.refresh_started_at = Some(Instant::now());
-            self.refresh_timeout_reported = false;
             self.phase = Phase::Refreshing;
             self.clear_error_surface();
             self.status_message = "Refreshing...".into();
             return cosmic::task::batch(tasks);
         }
         self.refresh_started_at = None;
-        self.refresh_timeout_reported = false;
+        self.refresh_phase = RefreshPhase::Idle;
         self.phase = Phase::Idle;
         Task::none()
     }

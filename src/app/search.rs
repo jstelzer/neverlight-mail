@@ -2,7 +2,7 @@ use cosmic::app::Task;
 use cosmic::widget;
 use futures::future::{AbortHandle, Abortable};
 
-use super::{AppModel, Message, Phase};
+use super::{AppModel, ComposePhase, Message, Phase, SearchPhase};
 
 fn should_apply_search_results(
     current_epoch: u64,
@@ -17,11 +17,10 @@ impl AppModel {
     pub(super) fn handle_search(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SearchActivate => {
-                if self.setup_model.is_some() || self.show_compose_dialog || self.search_focused {
+                if self.setup_model.is_some() || self.compose_phase.is_open() || self.search_phase.is_focused() {
                     return Task::none();
                 }
-                self.search_active = true;
-                self.search_focused = true;
+                self.search_phase = SearchPhase::InputFocused;
                 self.search_query.clear();
                 return widget::text_input::focus(crate::ui::message_list::search_input_id());
             }
@@ -81,7 +80,7 @@ impl AppModel {
                 self.collapsed_threads.clear();
                 self.has_more_messages = false;
                 self.recompute_visible();
-                self.search_focused = false;
+                self.search_phase = SearchPhase::Results;
                 if count > 0 {
                     self.status_message = format!("Search: {} results for \"{}\"", count, query);
                 } else {
@@ -100,17 +99,16 @@ impl AppModel {
                     return Task::none();
                 }
                 self.search_abort = None;
-                self.search_focused = false;
+                self.search_phase = SearchPhase::Results;
                 log::error!("Search failed: {}", e);
                 self.set_status_error(format!("Search failed: {}", e));
             }
             Message::SearchClear => {
-                if self.search_active {
+                if self.search_phase.is_active() {
                     if let Some(handle) = self.search_abort.take() {
                         handle.abort();
                     }
-                    self.search_active = false;
-                    self.search_focused = false;
+                    self.search_phase = SearchPhase::Inactive;
                     self.search_query.clear();
                     // Restore previous folder view
                     if let Some(acct_idx) = self.active_account {
@@ -121,8 +119,7 @@ impl AppModel {
                     }
                 } else {
                     // Not searching — Escape cancels compose dialog
-                    self.show_compose_dialog = false;
-                    self.is_sending = false;
+                    self.compose_phase = ComposePhase::Closed;
                 }
             }
 
