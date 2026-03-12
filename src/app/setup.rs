@@ -4,7 +4,7 @@ use cosmic::Element;
 
 use neverlight_mail_core::config::{
     AccountCapabilities, AccountConfig, AuthBackend, AuthMethod, FileAccountConfig,
-    MultiAccountFileConfig, new_account_id,
+    MultiAccountFileConfig, new_account_id, DEFAULT_JMAP_SESSION_URL,
 };
 use neverlight_mail_core::oauth::OAuthRedirectHandler;
 use neverlight_mail_core::setup::{self, FieldId, SetupInput, SetupRequest};
@@ -349,7 +349,7 @@ impl AppModel {
 
             controls = controls
                 .push(
-                    widget::text_input("https://api.fastmail.com/jmap/session", &model.jmap_url)
+                    widget::text_input(DEFAULT_JMAP_SESSION_URL, &model.jmap_url)
                         .label("JMAP Session URL")
                         .on_input(Message::SetupJmapUrlChanged),
                 )
