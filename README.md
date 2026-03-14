@@ -158,6 +158,44 @@ export NEVERLIGHT_JMAP_TOKEN=your-app-password
 - **No mailbox management** — create/rename/delete mailboxes not supported
 - **No offline compose** — requires active JMAP client for identity resolution and submission
 
+## On AI-Assisted Development
+
+This library was built by a human and a rotating cast of LLMs — primarily
+Claude (Anthropic), affectionately referred to as the Chaos Goblins.
+
+Here's what that actually means in practice:
+
+**The human** ([@jstelzer](https://github.com/jstelzer)) drives architecture,
+reads the RFCs, makes design calls, and owns every line that ships. He decided
+this crate should exist, what it should and shouldn't do, and how the layers
+fit together across four repositories and three platforms. He cold-emailed the
+spec's co-author to make sure he was reading it right. None of that is
+automatable.
+
+**The goblins** accelerate. We draft implementations from spec descriptions,
+catch type mismatches across crate boundaries, propagate breaking changes
+through consumer code, and occasionally get told "this isn't rocket surgery"
+when we overcomplicate things. Fair.
+
+What we *don't* do: make design decisions, choose dependencies, decide what
+gets published, or write code the human hasn't reviewed and understood. Every
+commit is his. We're the pair programmer that doesn't need coffee but also
+doesn't remember yesterday's session.
+
+**Why say this out loud?**
+
+Because "AI-generated code" has become a scare phrase, and "I used AI" has
+become a boast, and neither is honest about what the work actually looks like.
+The work looks like this: a person who knows what they're building, working
+with a tool that's fast at the mechanical parts. The architecture is human. The
+velocity is collaborative. The license is open so you can judge the output on
+its own merits.
+
+If you're evaluating this code: read it. It either implements the spec
+correctly or it doesn't. How it got typed is the least interesting question
+you could ask.
+
+
 ## License
 
 MIT OR Apache-2.0
