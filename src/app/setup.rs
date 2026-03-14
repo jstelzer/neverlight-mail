@@ -199,6 +199,8 @@ impl AppModel {
 
                 // Open browser and wait for authorization
                 let token_set = flow.authorize(&redirect).await.map_err(|e| e.to_string())?;
+                let refresh_token = token_set.refresh_token
+                    .ok_or_else(|| "OAuth server did not return a refresh token".to_string())?;
 
                 Ok(OAuthTokenResult {
                     issuer: flow.issuer().to_string(),
@@ -206,7 +208,7 @@ impl AppModel {
                     token_endpoint: flow.token_endpoint().to_string(),
                     resource: flow.resource().to_string(),
                     access_token: token_set.access_token,
-                    refresh_token: token_set.refresh_token,
+                    refresh_token,
                 })
             }
             .await;
