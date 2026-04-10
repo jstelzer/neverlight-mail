@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use cosmic::app::Task;
-use cosmic::widget::{image, markdown};
+use cosmic::widget::{image, markdown, text_editor};
 use futures::future::{AbortHandle, Abortable};
 
 use super::{AppModel, ConversationEntry, Message};
@@ -183,6 +183,7 @@ impl AppModel {
 
     fn clear_conversation(&mut self) {
         self.conversation.clear();
+        self.conversation_editors.clear();
         self.active_conversation_id = None;
     }
 
@@ -389,9 +390,9 @@ impl AppModel {
 
                     if self.body_defer_retries >= MAX_DEFER_RETRIES {
                         let msg = "Message body unavailable — try refreshing the folder";
-                        self.preview_markdown =
-                            cosmic::widget::markdown::parse(msg).collect();
+                        self.preview_markdown = markdown::parse(msg).collect();
                         self.preview_body = msg.into();
+                        self.preview_editor = text_editor::Content::with_text(msg);
                         self.status_message = msg.into();
                     } else {
                         self.pending_body = Some(index);
@@ -417,6 +418,7 @@ impl AppModel {
                 self.body_abort = None;
 
                 self.preview_markdown = parse_markdown_capped(&markdown_body, &plain_body);
+                self.preview_editor = text_editor::Content::with_text(&plain_body);
                 self.preview_body = plain_body;
                 self.preview_image_handles = build_image_handles(&attachments);
                 self.preview_attachments = attachments;
@@ -484,6 +486,7 @@ impl AppModel {
                     self.selected_message = None;
                     self.preview_body.clear();
                     self.preview_markdown.clear();
+                    self.preview_editor = text_editor::Content::new();
                     self.preview_attachments.clear();
                     self.preview_image_handles.clear();
                     self.status_message = "Message no longer exists on server".into();
@@ -492,6 +495,7 @@ impl AppModel {
 
                 let msg = format!("Failed to load message body: {}", e);
                 self.preview_markdown = markdown::parse(&msg).collect();
+                self.preview_editor = text_editor::Content::with_text(&msg);
                 self.preview_body = msg;
                 self.status_message = "Error loading message".into();
                 log::error!("Body fetch failed: {}", e);
@@ -560,9 +564,14 @@ impl AppModel {
                         loaded: false,
                     })
                     .collect();
+                self.conversation_editors = thread_msgs
+                    .iter()
+                    .map(|_| text_editor::Content::new())
+                    .collect();
 
-                self.preview_markdown.clear();
                 self.preview_body.clear();
+                self.preview_markdown.clear();
+                self.preview_editor = text_editor::Content::new();
                 self.preview_attachments.clear();
                 self.preview_image_handles.clear();
 
@@ -613,19 +622,23 @@ impl AppModel {
                     return Task::none();
                 }
 
-                let Some(entry) = self
+                let Some(entry_idx) = self
                     .conversation
-                    .iter_mut()
-                    .find(|e| e.email_id == email_id)
+                    .iter()
+                    .position(|e| e.email_id == email_id)
                 else {
                     return Task::none();
                 };
+                let entry = &mut self.conversation[entry_idx];
 
                 match result {
                     Ok((markdown_body, plain_body, attachments)) => {
                         entry.markdown_items =
                             parse_markdown_capped(&markdown_body, &plain_body);
                         entry.image_handles = build_image_handles(&attachments);
+                        if let Some(editor) = self.conversation_editors.get_mut(entry_idx) {
+                            *editor = text_editor::Content::with_text(&plain_body);
+                        }
                         entry.plain_body = plain_body;
                         entry.attachments = attachments;
                         entry.loaded = true;
@@ -633,6 +646,9 @@ impl AppModel {
                     Err(e) => {
                         let msg = format!("Failed to load: {e}");
                         entry.markdown_items = markdown::parse(&msg).collect();
+                        if let Some(editor) = self.conversation_editors.get_mut(entry_idx) {
+                            *editor = text_editor::Content::with_text(&msg);
+                        }
                         entry.loaded = true;
                     }
                 }
@@ -694,6 +710,10 @@ impl AppModel {
                 neverlight_mail_core::mime::open_link(url.as_str());
             }
 
+            Message::ToggleSelectableView => {
+                self.preview_selectable = !self.preview_selectable;
+            }
+
             Message::CopyBody => {
                 // In conversation mode, copy the active entry's body
                 if !self.conversation.is_empty() {
@@ -714,6 +734,20 @@ impl AppModel {
                 }
                 if !self.preview_body.is_empty() {
                     return cosmic::iced::clipboard::write(self.preview_body.clone());
+                }
+            }
+
+            Message::PreviewBodyAction(action) => {
+                if !action.is_edit() {
+                    self.preview_editor.perform(action);
+                }
+            }
+
+            Message::ConversationBodyAction { index, action } => {
+                if !action.is_edit() {
+                    if let Some(editor) = self.conversation_editors.get_mut(index) {
+                        editor.perform(action);
+                    }
                 }
             }
 

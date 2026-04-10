@@ -272,11 +272,15 @@ pub struct AppModel {
 
     pub(super) preview_body: String,
     pub(super) preview_markdown: Vec<markdown::Item>,
+    pub(super) preview_editor: text_editor::Content,
+    pub(super) preview_selectable: bool,
     pub(super) preview_attachments: Vec<AttachmentData>,
     pub(super) preview_image_handles: Vec<Option<image::Handle>>,
 
     /// Conversation view: all messages in the selected thread, bodies loading progressively.
     pub(super) conversation: Vec<ConversationEntry>,
+    /// Selectable text editor contents, parallel to `conversation` by index.
+    pub(super) conversation_editors: Vec<text_editor::Content>,
     /// The email_id of the "active" message within the conversation (reply/forward target).
     pub(super) active_conversation_id: Option<String>,
 
@@ -399,6 +403,9 @@ pub enum Message {
     },
     LinkClicked(markdown::Url),
     CopyBody,
+    ToggleSelectableView,
+    PreviewBodyAction(text_editor::Action),
+    ConversationBodyAction { index: usize, action: text_editor::Action },
 
     SaveAttachment(usize),
     SaveAttachmentComplete(Result<String, String>),
@@ -581,4 +588,48 @@ pub enum OAuthSetupPhase {
     Inactive,
     /// Discovering OAuth metadata + registering client + waiting for browser.
     Discovering,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use neverlight_mail_core::config::AccountConfig;
+
+    fn test_config() -> AccountConfig {
+        AccountConfig {
+            id: "test".into(),
+            label: "Test".into(),
+            jmap_url: "https://example.com/.well-known/jmap".into(),
+            username: "user@example.com".into(),
+            auth: neverlight_mail_core::config::AuthMethod::AppPassword {
+                token: "tok".into(),
+            },
+            email_addresses: vec!["user@example.com".into()],
+            capabilities: neverlight_mail_core::config::AccountCapabilities::default(),
+            max_messages_per_mailbox: None,
+        }
+    }
+
+    #[test]
+    fn backoff_escalates_with_attempts() {
+        let mut acct = AccountState::new(test_config());
+        assert_eq!(acct.reconnect_backoff().as_secs(), 5);
+        acct.reconnect_attempts = 1;
+        assert_eq!(acct.reconnect_backoff().as_secs(), 15);
+        acct.reconnect_attempts = 2;
+        assert_eq!(acct.reconnect_backoff().as_secs(), 30);
+        acct.reconnect_attempts = 3;
+        assert_eq!(acct.reconnect_backoff().as_secs(), 60);
+        acct.reconnect_attempts = 100;
+        assert_eq!(acct.reconnect_backoff().as_secs(), 60);
+    }
+
+    #[test]
+    fn backoff_resets_on_new_state() {
+        let mut acct = AccountState::new(test_config());
+        acct.reconnect_attempts = 5;
+        assert_eq!(acct.reconnect_backoff().as_secs(), 60);
+        acct.reconnect_attempts = 0;
+        assert_eq!(acct.reconnect_backoff().as_secs(), 5);
+    }
 }

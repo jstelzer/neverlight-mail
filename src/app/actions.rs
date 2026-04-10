@@ -517,9 +517,10 @@ impl AppModel {
                 intent.source.mailbox_id,
                 intent.dest.mailbox_id,
             );
+            let pre_move_flags = store::flags_to_u8(removed.is_read, removed.is_starred);
             self.pending_move_restore
                 .insert(intent.message.clone(), (removed, index));
-            return self.dispatch_move(intent.message, intent.source, intent.dest);
+            return self.dispatch_move(intent.message, intent.source, intent.dest, pre_move_flags);
         }
         log::debug!(
             "Move skipped (remove_message_optimistic returned None): email_id={} index={}",
@@ -618,6 +619,7 @@ impl AppModel {
                 };
                 self.preview_body.clear();
                 self.preview_markdown.clear();
+                self.preview_editor = cosmic::widget::text_editor::Content::new();
                 self.preview_attachments.clear();
                 self.preview_image_handles.clear();
             }
@@ -636,12 +638,12 @@ impl AppModel {
         message: MessageIdentity,
         source: MailboxIdentity,
         dest: MailboxIdentity,
+        pre_move_flags: u8,
     ) -> Task<Message> {
         let mut tasks: Vec<Task<Message>> = Vec::new();
 
         if let Some(cache) = &self.cache {
             let cache = cache.clone();
-            let new_flags = store::flags_to_u8(true, false);
             let account_id = source.account_id.clone();
             let email_id = message.email_id.clone();
             let dest_mailbox_id = dest.mailbox_id.clone();
@@ -650,7 +652,7 @@ impl AppModel {
                     .update_flags(
                         account_id,
                         email_id,
-                        new_flags,
+                        pre_move_flags,
                         format!("move:{}", dest_mailbox_id),
                     )
                     .await

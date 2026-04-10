@@ -359,6 +359,7 @@ impl AppModel {
                 let subject = self.compose_subject.clone();
                 let in_reply_to = self.compose_in_reply_to.clone();
                 let references = self.compose_references.clone();
+                let attachments = self.compose_attachments.clone();
 
                 return cosmic::task::future(async move {
                     // Fetch identities to find the right one
@@ -377,6 +378,20 @@ impl AppModel {
                         ));
                     };
 
+                    // Upload attachments to blob store before building the draft
+                    let uploaded = if !attachments.is_empty() {
+                        match submit::upload_attachments(&client, &attachments).await {
+                            Ok(u) => u,
+                            Err(e) => {
+                                return Message::SendComplete(Err(format!(
+                                    "Failed to upload attachments: {e}"
+                                )));
+                            }
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
                     let req = SendRequest {
                         identity_id: &identity.id,
                         from: &from_addr,
@@ -389,6 +404,7 @@ impl AppModel {
                         sent_mailbox_id: &sent_mailbox_id,
                         in_reply_to: in_reply_to.as_deref(),
                         references: references.as_deref(),
+                        attachments: &uploaded,
                     };
 
                     match submit::send(&client, &req).await {

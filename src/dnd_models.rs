@@ -39,7 +39,7 @@ impl AsMimeTypes for DraggedMessage {
     fn as_bytes(&self, mime_type: &str) -> Option<Cow<'static, [u8]>> {
         if mime_type == NEVERLIGHT_MAIL_MIME {
             let s = format!(
-                "{}:{}:{}",
+                "{}\n{}\n{}",
                 self.source_account_id, self.email_id, self.source_mailbox_id
             );
             Some(Cow::Owned(s.into_bytes()))
@@ -59,7 +59,7 @@ impl TryFrom<(Vec<u8>, String)> for DraggedMessage {
     type Error = String;
     fn try_from((bytes, _mime): (Vec<u8>, String)) -> Result<Self, Self::Error> {
         let s = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-        let mut parts = s.splitn(3, ':');
+        let mut parts = s.splitn(3, '\n');
         let source_account_id = parts
             .next()
             .ok_or("missing source_account_id")?
@@ -116,7 +116,7 @@ mod tests {
         let available = msg.available();
         assert_eq!(available.as_ref(), &[NEVERLIGHT_MAIL_MIME]);
         let bytes = msg.as_bytes(NEVERLIGHT_MAIL_MIME).unwrap();
-        assert_eq!(bytes.as_ref(), b"acc-1:M12345:mb-inbox");
+        assert_eq!(bytes.as_ref(), b"acc-1\nM12345\nmb-inbox");
 
         // Deserialize
         let parsed =
@@ -124,6 +124,22 @@ mod tests {
         assert_eq!(parsed.source_account_id, "acc-1");
         assert_eq!(parsed.email_id, "M12345");
         assert_eq!(parsed.source_mailbox_id, "mb-inbox");
+    }
+
+    #[test]
+    fn dragged_message_roundtrip_with_colons_in_ids() {
+        let msg = DraggedMessage {
+            source_account_id: "acc:1:foo".to_string(),
+            email_id: "M:12345:bar".to_string(),
+            source_mailbox_id: "mb:inbox:baz".to_string(),
+        };
+
+        let bytes = msg.as_bytes(NEVERLIGHT_MAIL_MIME).unwrap();
+        let parsed =
+            DraggedMessage::try_from((bytes.into_owned(), NEVERLIGHT_MAIL_MIME.into())).unwrap();
+        assert_eq!(parsed.source_account_id, "acc:1:foo");
+        assert_eq!(parsed.email_id, "M:12345:bar");
+        assert_eq!(parsed.source_mailbox_id, "mb:inbox:baz");
     }
 
     #[test]

@@ -2322,15 +2322,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
-name = "html-safe-md"
-version = "0.0.2"
-dependencies = [
- "ammonia",
- "html2md",
- "html2text",
-]
-
-[[package]]
 name = "html2md"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3753,10 +3744,10 @@ name = "neverlight-mail-core"
 version = "0.1.0"
 dependencies = [
  "dirs",
- "html-safe-md",
  "keyring",
  "log",
  "mail-parser",
+ "neverlight-mail-html-safe-md",
  "neverlight-mail-oauth",
  "open",
  "reqwest",
@@ -3766,6 +3757,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "neverlight-mail-html-safe-md"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "html2md",
+ "html2text",
 ]
 
 [[package]]

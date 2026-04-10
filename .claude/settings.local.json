@@ -27,7 +27,12 @@
       "Bash(cp:*)",
       "Bash(wc:*)",
       "Read(//home/mental/projects/neverlight-forge-env/**)",
-      "Read(//home/mental/projects/**)"
+      "Read(//home/mental/projects/**)",
+      "Bash(find /home/mental/projects/neverlight-forge-env/neverlight-mail/src -name \"*.rs\" -type f -exec wc -l {} +)",
+      "Bash(find /home/mental/projects/neverlight-forge-env/neverlight-mail/src -name \"*.rs\" -type f -exec wc -l {})",
+      "Bash(find /home/mental/projects/neverlight-forge-env/neverlight-mail-core/src -name \"*.rs\" -type f -exec wc -l {} +)",
+      "Bash(find /home/mental/projects/neverlight-forge-env/neverlight-mail-core/src -name \"*.rs\" -type f -exec ls -lh {})",
+      "Bash(sort -k2)"
     ]
   }
 }

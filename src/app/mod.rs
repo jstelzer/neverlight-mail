@@ -105,9 +105,12 @@ impl cosmic::Application for AppModel {
             has_more_messages: false,
             preview_body: String::new(),
             preview_markdown: Vec::new(),
+            preview_editor: text_editor::Content::new(),
+            preview_selectable: false,
             preview_attachments: Vec::new(),
             preview_image_handles: Vec::new(),
             conversation: Vec::new(),
+            conversation_editors: Vec::new(),
             active_conversation_id: None,
             collapsed_threads: HashSet::new(),
             visible_indices: Vec::new(),
@@ -463,10 +466,13 @@ impl cosmic::Application for AppModel {
                         .and_then(|i| self.messages.get(i).map(|msg| (i, msg)));
                     crate::ui::message_view::view(
                         &self.preview_markdown,
+                        &self.preview_editor,
+                        self.preview_selectable,
                         selected_msg,
                         &self.preview_attachments,
                         &self.preview_image_handles,
                         &self.conversation,
+                        &self.conversation_editors,
                         self.active_conversation_id.as_deref(),
                     )
                 }
@@ -568,6 +574,9 @@ impl cosmic::Application for AppModel {
             | Message::SaveConversationAttachment { .. }
             | Message::LinkClicked(_)
             | Message::CopyBody
+            | Message::ToggleSelectableView
+            | Message::PreviewBodyAction(_)
+            | Message::ConversationBodyAction { .. }
             | Message::SaveAttachment(_)
             | Message::SaveAttachmentComplete(_) => self.handle_body(message),
 

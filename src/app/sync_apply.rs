@@ -93,7 +93,7 @@ impl AppModel {
         }
         self.accounts[idx].reconnect_attempts = 0;
         self.accounts[idx].last_error = None;
-        self.notified_messages.clear();
+        self.notified_messages.retain(|m| m.account_id != account_id);
         self.clear_error_surface();
 
         let had_cached_folders = !self.accounts[idx].folders.is_empty();
@@ -401,6 +401,7 @@ impl AppModel {
             self.accounts[idx].conn_state = ConnectionState::Error(e.clone());
             self.accounts[idx].last_error = Some(e.clone());
             self.accounts[idx].client = None;
+            self.accounts[idx].reconnect_attempts = self.accounts[idx].reconnect_attempts.saturating_add(1);
             let label = &self.accounts[idx].config.label;
             if self.accounts[idx].folders.is_empty() {
                 self.status_message = format!("{}: Failed to load folders: {}", label, e);
@@ -566,6 +567,7 @@ impl AppModel {
             acct.conn_state = ConnectionState::Error(e.to_string());
             acct.last_error = Some(e.to_string());
             acct.client = None;
+            acct.reconnect_attempts = acct.reconnect_attempts.saturating_add(1);
             let label = &acct.config.label;
             log::error!("Message sync failed for '{}': {} — dropping client", label, e);
 
@@ -611,6 +613,7 @@ impl AppModel {
         self.selected_message = None;
         self.preview_body.clear();
         self.preview_markdown.clear();
+        self.preview_editor = cosmic::widget::text_editor::Content::new();
         self.preview_attachments.clear();
         self.preview_image_handles.clear();
         self.messages_offset = 0;

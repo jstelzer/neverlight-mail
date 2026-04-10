@@ -1,6 +1,6 @@
 use cosmic::iced::{ContentFit, Length};
 use cosmic::widget;
-use cosmic::widget::{image, markdown};
+use cosmic::widget::{image, markdown, text_editor};
 use cosmic::Element;
 
 use crate::app::{ConversationEntry, Message};
@@ -9,17 +9,32 @@ use neverlight_mail_core::models::{AttachmentData, MessageSummary};
 /// Render the message preview pane with an action toolbar when a message is selected.
 pub fn view<'a>(
     markdown_items: &'a [markdown::Item],
+    preview_editor: &'a text_editor::Content,
+    selectable: bool,
     selected: Option<(usize, &'a MessageSummary)>,
     attachments: &[AttachmentData],
     image_handles: &[Option<image::Handle>],
     conversation: &'a [ConversationEntry],
+    conversation_editors: &'a [text_editor::Content],
     active_email_id: Option<&'a str>,
 ) -> Element<'a, Message> {
     if !conversation.is_empty() {
-        return conversation_view(conversation, active_email_id, selected);
+        return conversation_view(
+            conversation,
+            conversation_editors,
+            selectable,
+            active_email_id,
+            selected,
+        );
     }
 
-    if markdown_items.is_empty() && attachments.is_empty() {
+    let has_body = if selectable {
+        !preview_editor.text().trim().is_empty()
+    } else {
+        !markdown_items.is_empty()
+    };
+
+    if !has_body && attachments.is_empty() {
         return widget::container(widget::text::body("Select a message to read"))
             .padding(16)
             .width(Length::Fill)
@@ -30,7 +45,7 @@ pub fn view<'a>(
     let mut col = widget::column().spacing(0);
 
     if let Some((index, msg)) = selected {
-        col = col.push(toolbar(index, msg));
+        col = col.push(toolbar(index, msg, selectable));
         col = col.push(
             widget::container(message_header(msg))
                 .padding([4, 16])
@@ -39,15 +54,8 @@ pub fn view<'a>(
         );
     }
 
-    if !markdown_items.is_empty() {
-        let md = markdown::view(
-            markdown_items,
-            markdown::Settings::default(),
-            markdown::Style::from_palette(cosmic::iced::Theme::Dark.palette()),
-        )
-        .map(Message::LinkClicked);
-
-        col = col.push(widget::container(md).padding(16).width(Length::Fill));
+    if has_body {
+        col = col.push(body_widget(markdown_items, preview_editor, selectable));
     }
 
     if !attachments.is_empty() {
@@ -60,8 +68,35 @@ pub fn view<'a>(
         .into()
 }
 
+/// Render a body region — markdown (rich) or text_editor (selectable).
+fn body_widget<'a>(
+    markdown_items: &'a [markdown::Item],
+    editor: &'a text_editor::Content,
+    selectable: bool,
+) -> Element<'a, Message> {
+    if selectable {
+        widget::container(
+            widget::text_editor(editor).on_action(Message::PreviewBodyAction),
+        )
+        .padding(16)
+        .width(Length::Fill)
+        .into()
+    } else {
+        let md = markdown::view(
+            markdown_items,
+            markdown::Settings::default(),
+            markdown::Style::from_palette(cosmic::iced::Theme::Dark.palette()),
+        )
+        .map(Message::LinkClicked);
+
+        widget::container(md).padding(16).width(Length::Fill).into()
+    }
+}
+
 fn conversation_view<'a>(
     conversation: &'a [ConversationEntry],
+    conversation_editors: &'a [text_editor::Content],
+    selectable: bool,
     active_email_id: Option<&'a str>,
     selected: Option<(usize, &'a MessageSummary)>,
 ) -> Element<'a, Message> {
@@ -69,11 +104,11 @@ fn conversation_view<'a>(
 
     // Toolbar for the active message
     if let Some((index, msg)) = selected {
-        col = col.push(toolbar(index, msg));
+        col = col.push(toolbar(index, msg, selectable));
     }
 
     // Stacked message cards
-    for entry in conversation {
+    for (entry_idx, entry) in conversation.iter().enumerate() {
         let is_active = active_email_id == Some(entry.email_id.as_str());
 
         let mut card_col = widget::column().spacing(4);
@@ -83,16 +118,45 @@ fn conversation_view<'a>(
 
         // Body
         if entry.loaded {
-            if !entry.markdown_items.is_empty() {
-                let md = markdown::view(
-                    &entry.markdown_items,
-                    markdown::Settings::default(),
-                    markdown::Style::from_palette(cosmic::iced::Theme::Dark.palette()),
-                )
-                .map(Message::LinkClicked);
-                card_col = card_col.push(
-                    widget::container(md).padding([8, 0]).width(Length::Fill),
-                );
+            let has_content = if selectable {
+                conversation_editors
+                    .get(entry_idx)
+                    .map_or(false, |e| !e.text().trim().is_empty())
+            } else {
+                !entry.markdown_items.is_empty()
+            };
+
+            if has_content {
+                if selectable {
+                    if let Some(editor) = conversation_editors.get(entry_idx) {
+                        card_col = card_col.push(
+                            widget::container(
+                                widget::text_editor(editor).on_action(move |action| {
+                                    Message::ConversationBodyAction {
+                                        index: entry_idx,
+                                        action,
+                                    }
+                                }),
+                            )
+                            .padding([8, 0])
+                            .width(Length::Fill),
+                        );
+                    }
+                } else {
+                    let md = markdown::view(
+                        &entry.markdown_items,
+                        markdown::Settings::default(),
+                        markdown::Style::from_palette(
+                            cosmic::iced::Theme::Dark.palette(),
+                        ),
+                    )
+                    .map(Message::LinkClicked);
+                    card_col = card_col.push(
+                        widget::container(md)
+                            .padding([8, 0])
+                            .width(Length::Fill),
+                    );
+                }
             }
 
             if !entry.attachments.is_empty() {
@@ -162,7 +226,7 @@ fn conversation_view<'a>(
         .into()
 }
 
-fn toolbar<'a>(index: usize, msg: &MessageSummary) -> Element<'a, Message> {
+fn toolbar<'a>(index: usize, msg: &MessageSummary, selectable: bool) -> Element<'a, Message> {
     let star_label = if msg.is_starred {
         "\u{2605}"
     } else {
@@ -173,6 +237,7 @@ fn toolbar<'a>(index: usize, msg: &MessageSummary) -> Element<'a, Message> {
     } else {
         "Mark read"
     };
+    let select_label = if selectable { "Rich text" } else { "Select text" };
 
     let toolbar = widget::row()
         .spacing(8)
@@ -182,6 +247,9 @@ fn toolbar<'a>(index: usize, msg: &MessageSummary) -> Element<'a, Message> {
         .push(widget::button::text(read_label).on_press(Message::ToggleRead(index)))
         .push(widget::button::text("Archive").on_press(Message::Archive(index)))
         .push(widget::button::text("Copy").on_press(Message::CopyBody))
+        .push(
+            widget::button::text(select_label).on_press(Message::ToggleSelectableView),
+        )
         .push(widget::button::destructive("Trash").on_press(Message::Delete(index)));
 
     widget::container(toolbar)

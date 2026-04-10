@@ -131,9 +131,11 @@ impl AppModel {
         self.pending_body = None;
         self.preview_body.clear();
         self.preview_markdown.clear();
+        self.preview_editor = cosmic::widget::text_editor::Content::new();
         self.preview_attachments.clear();
         self.preview_image_handles.clear();
         self.conversation.clear();
+        self.conversation_editors.clear();
         self.active_conversation_id = None;
         self.collapsed_threads.clear();
         self.recompute_visible();

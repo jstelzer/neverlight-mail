@@ -94,11 +94,7 @@ pub fn view<'a>(
 
             // Show connection error inline if present
             if let ConnectionState::Error(ref e) = acct.conn_state {
-                let short_err = if e.len() > 40 {
-                    format!("{}...", &e[..37])
-                } else {
-                    e.clone()
-                };
+                let short_err = truncate(e, 40);
                 let aid = acct.config.id.clone();
                 col = col.push(
                     widget::button::custom(
@@ -250,12 +246,7 @@ fn status_pill_view<'a>(
         ConnectionState::Connecting => format!("◌ {}  Connecting...", acct.config.label),
         ConnectionState::Syncing => format!("◌ {}  Syncing...", acct.config.label),
         ConnectionState::Error(msg) => {
-            let short = if msg.len() > 30 {
-                format!("{}...", &msg[..27])
-            } else {
-                msg.clone()
-            };
-            format!("✖ {}  {}", acct.config.label, short)
+            format!("✖ {}  {}", acct.config.label, truncate(msg, 30))
         }
         ConnectionState::Disconnected => format!("○ {}  Disconnected", acct.config.label),
     };
@@ -424,4 +415,45 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
     out.push_str("...");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate;
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length_unchanged() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string_adds_ellipsis() {
+        let result = truncate("hello world, this is long", 10);
+        assert_eq!(result, "hello w...");
+        assert_eq!(result.chars().count(), 10);
+    }
+
+    #[test]
+    fn truncate_multibyte_utf8_does_not_panic() {
+        // 10 multi-byte characters (each 3 bytes in UTF-8 = 30 bytes total)
+        let s = "日本語テスト文字列です";
+        assert_eq!(s.len(), 33); // byte length
+        assert_eq!(s.chars().count(), 11); // char count
+        let result = truncate(s, 8);
+        assert_eq!(result.chars().count(), 8);
+        assert_eq!(result, "日本語テス...");
+    }
+
+    #[test]
+    fn truncate_mixed_ascii_and_multibyte() {
+        let s = "Error: 接続に失敗しました — timeout after 30s";
+        let result = truncate(s, 20);
+        assert!(result.ends_with("..."));
+        assert_eq!(result.chars().count(), 20);
+    }
 }
