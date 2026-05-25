@@ -401,7 +401,7 @@ pub enum Message {
         epoch: u64,
         result: Result<(String, String, Vec<AttachmentData>), String>,
     },
-    LinkClicked(markdown::Url),
+    LinkClicked(markdown::Uri),
     CopyBody,
     ToggleSelectableView,
     PreviewBodyAction(text_editor::Action),

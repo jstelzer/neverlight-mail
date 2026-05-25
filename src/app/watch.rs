@@ -11,7 +11,7 @@ pub(super) fn push_watch_stream(
     client: JmapClient,
     account_id: String,
 ) -> impl futures::Stream<Item = Message> {
-    cosmic::iced_futures::stream::channel(50, move |mut output| async move {
+    cosmic::iced::stream::channel::<Message>(50, move |mut output: cosmic::iced::futures::channel::mpsc::Sender<Message>| async move {
         let aid = account_id.clone();
         let mut sender = output.clone();
         let result = push::listen(

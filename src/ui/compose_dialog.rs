@@ -60,12 +60,12 @@ pub fn view<'a>(state: ComposeViewState<'a>) -> Element<'a, Message> {
         ComposeMode::Forward => "Forward",
     };
 
-    let mut controls = widget::column().spacing(12);
+    let mut controls = widget::Column::new().spacing(12);
 
     // Account selector (shown when >1 account)
     if account_labels.len() > 1 {
         controls = controls.push(
-            widget::column()
+            widget::Column::new()
                 .spacing(4)
                 .push(widget::text::body("Account"))
                 .push(widget::dropdown(
@@ -78,7 +78,7 @@ pub fn view<'a>(state: ComposeViewState<'a>) -> Element<'a, Message> {
 
     if from_addresses.len() > 1 {
         controls = controls.push(
-            widget::column()
+            widget::Column::new()
                 .spacing(4)
                 .push(widget::text::body("From"))
                 .push(widget::dropdown(
@@ -89,7 +89,7 @@ pub fn view<'a>(state: ComposeViewState<'a>) -> Element<'a, Message> {
         );
     } else if let Some(addr) = from_addresses.first() {
         controls = controls.push(
-            widget::column()
+            widget::Column::new()
                 .spacing(4)
                 .push(widget::text::body("From"))
                 .push(widget::text::caption(addr)),
@@ -116,7 +116,7 @@ pub fn view<'a>(state: ComposeViewState<'a>) -> Element<'a, Message> {
 
     // Attachment section (visual only — actual DnD destination is in the main view
     // because COSMIC dialog overlays don't propagate drag_destinations to the compositor)
-    let mut attach_col = widget::column().spacing(6);
+    let mut attach_col = widget::Column::new().spacing(6);
     let attach_label = if drag_hover {
         "Drop files to attach"
     } else {
@@ -127,7 +127,7 @@ pub fn view<'a>(state: ComposeViewState<'a>) -> Element<'a, Message> {
     if !attachments.is_empty() {
         for (i, att) in attachments.iter().enumerate() {
             let label = format!("{} ({})", att.filename, format_size(att.data.len()));
-            let row = widget::row()
+            let row = widget::Row::new()
                 .spacing(8)
                 .align_y(cosmic::iced::Alignment::Center)
                 .push(widget::text::body(label))
