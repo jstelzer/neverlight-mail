@@ -129,13 +129,21 @@ Message actions (buttons in preview pane): toggle read, toggle star, archive, tr
 
 The **connection status pill** at the bottom of the sidebar shows current JMAP state (Connected / Syncing / Error). Click to force a reconnect.
 
-## Building
+## Building & Installing
 
-Requires Rust nightly and system dependencies for libcosmic (Wayland dev libraries).
+Requires Rust nightly, a specific sibling workspace layout, and system dependencies for `libcosmic` (Wayland dev libraries).
+
+For a complete step-by-step setup and prerequisites list, please see the [Installation Guide](docs/install.md).
 
 ```sh
-cargo build            # debug (large, ~600M+ — normal for wgpu debug builds)
-cargo build --release  # release (~44M)
+# Build binary in debug profile
+cargo build
+
+# Build binary in optimized release profile
+cargo build --release
+
+# Build release profile and deploy desktop resources locally
+just install
 ```
 
 ## Configuration

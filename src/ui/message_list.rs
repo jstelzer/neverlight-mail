@@ -36,7 +36,7 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
         search_active,
         search_query,
     } = state;
-    let mut col = widget::column().spacing(2).padding(8);
+    let mut col = widget::Column::new().spacing(2).padding(8);
 
     if search_active {
         let input = widget::text_input("Search all mail...", search_query)
@@ -45,7 +45,7 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
             .id(search_input_id());
         let clear_btn = widget::button::text("Clear").on_press(Message::SearchClear);
         col = col.push(
-            widget::row()
+            widget::Row::new()
                 .push(widget::container(input).width(Length::Fill))
                 .push(clear_btn)
                 .spacing(4)
@@ -89,7 +89,7 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
 
             let depth = msg.thread_depth.min(4);
             let indent = (depth as u16) * 16;
-            let row_content = widget::column().push(subject).push(meta).spacing(2);
+            let row_content = widget::Column::new().push(subject).push(meta).spacing(2);
             let padded = widget::container(row_content).padding([0, 0, 0, indent]);
 
             let mut btn = widget::button::custom(padded)
@@ -118,7 +118,7 @@ pub fn view<'a>(state: MessageListState<'a>) -> Element<'a, Message> {
             let load_more_btn = widget::button::text("Load more messages")
                 .on_press(Message::LoadMoreMessages)
                 .width(Length::Fill);
-            col = col.push(widget::vertical_space().height(4));
+            col = col.push(widget::Space::new().height(4.0));
             col = col.push(load_more_btn);
         }
     }

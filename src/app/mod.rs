@@ -27,6 +27,7 @@ use neverlight_mail_core::config::{AccountConfig, ConfigNeedsInput, LayoutConfig
 use neverlight_mail_core::session::JmapSession;
 use neverlight_mail_core::setup::SetupModel;
 use neverlight_mail_core::store::CacheHandle;
+use neverlight_mail_core::client::JmapClient;
 
 use crate::dnd_models::DraggedFiles;
 use crate::ui::compose_dialog::ComposeMode;
@@ -282,9 +283,9 @@ impl cosmic::Application for AppModel {
 
         if self.search_phase.is_focused() {
             // When search input has focus, only intercept Escape.
-            subs.push(cosmic::iced_futures::event::listen_raw(
+            subs.push(cosmic::iced::event::listen_raw(
                 |event, status, _| {
-                    if cosmic::iced_core::event::Status::Ignored != status {
+                    if cosmic::iced::event::Status::Ignored != status {
                         return None;
                     }
                     match event {
@@ -298,9 +299,9 @@ impl cosmic::Application for AppModel {
             ));
         } else {
             // Full keyboard shortcuts when not typing in search
-            subs.push(cosmic::iced_futures::event::listen_raw(
+            subs.push(cosmic::iced::event::listen_raw(
                 |event, status, _| {
-                    if cosmic::iced_core::event::Status::Ignored != status {
+                    if cosmic::iced::event::Status::Ignored != status {
                         return None;
                     }
                     match event {
@@ -369,10 +370,15 @@ impl cosmic::Application for AppModel {
                 let client = client.clone();
                 let account_id = acct.config.id.clone();
                 let sub_id = format!("push-watch-{}", i);
+                let params = PushWatchParams {
+                    id: sub_id,
+                    client,
+                    account_id,
+                };
                 subs.push(
-                    Subscription::run_with_id(
-                        sub_id,
-                        watch::push_watch_stream(client, account_id.clone()),
+                    Subscription::run_with(
+                        params,
+                        |p| watch::push_watch_stream(p.client.clone(), p.account_id.clone()),
                     )
                     .map(move |msg| msg),
                 );
@@ -386,15 +392,25 @@ impl cosmic::Application for AppModel {
                     let mailbox_ids: Vec<String> =
                         acct.folders.iter().map(|f| f.mailbox_id.clone()).collect();
                     if !mailbox_ids.is_empty() {
-                        subs.push(Subscription::run_with_id(
-                            format!("backfill-{}", i),
-                            backfill::backfill_stream(
-                                client.clone(),
-                                cache.clone(),
-                                acct.config.id.clone(),
-                                mailbox_ids,
-                                acct.config.max_messages_per_mailbox,
-                                acct.backfill_pause.clone(),
+                        let sub_id = format!("backfill-{}", i);
+                        let params = BackfillParams {
+                            id: sub_id,
+                            client: client.clone(),
+                            cache: cache.clone(),
+                            account_id: acct.config.id.clone(),
+                            mailbox_ids,
+                            max_messages: acct.config.max_messages_per_mailbox,
+                            backfill_pause: acct.backfill_pause.clone(),
+                        };
+                        subs.push(Subscription::run_with(
+                            params,
+                            |p| backfill::backfill_stream(
+                                p.client.clone(),
+                                p.cache.clone(),
+                                p.account_id.clone(),
+                                p.mailbox_ids.clone(),
+                                p.max_messages,
+                                p.backfill_pause.clone(),
                             ),
                         ));
                     }
@@ -405,9 +421,9 @@ impl cosmic::Application for AppModel {
         // Periodic full sync fallback (5 minutes)
         let has_any_client = self.accounts.iter().any(|a| a.client.is_some());
         if has_any_client {
-            subs.push(Subscription::run_with_id(
-                "periodic-sync",
-                cosmic::iced_futures::stream::channel(1, |mut output| async move {
+            subs.push(Subscription::run_with(
+                "periodic-sync".to_string(),
+                |_id| cosmic::iced::stream::channel::<Message>(1, |mut output: cosmic::iced::futures::channel::mpsc::Sender<Message>| async move {
                     use futures::SinkExt;
                     let mut interval =
                         tokio::time::interval(std::time::Duration::from_secs(5 * 60));
@@ -487,7 +503,7 @@ impl cosmic::Application for AppModel {
             .padding([4, 8])
             .width(Length::Fill);
 
-        let content: Element<'_, Self::Message> = widget::column()
+        let content: Element<'_, Self::Message> = widget::Column::new()
             .push(main_content)
             .push(status_bar)
             .height(Length::Fill)
@@ -681,3 +697,49 @@ impl AppModel {
         <Self as cosmic::Application>::update(self, message)
     }
 }
+
+#[derive(Clone)]
+struct PushWatchParams {
+    id: String,
+    client: JmapClient,
+    account_id: String,
+}
+
+impl std::hash::Hash for PushWatchParams {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for PushWatchParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for PushWatchParams {}
+
+#[derive(Clone)]
+struct BackfillParams {
+    id: String,
+    client: JmapClient,
+    cache: CacheHandle,
+    account_id: String,
+    mailbox_ids: Vec<String>,
+    max_messages: Option<u32>,
+    backfill_pause: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::hash::Hash for BackfillParams {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for BackfillParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for BackfillParams {}

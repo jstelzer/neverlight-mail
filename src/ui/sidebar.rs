@@ -32,14 +32,14 @@ pub fn view<'a>(
     drag_target: Option<usize>,
     diagnostics: DiagnosticsState<'a>,
 ) -> Element<'a, Message> {
-    let mut col = widget::column().spacing(4).padding(8);
+    let mut col = widget::Column::new().spacing(4).padding(8);
 
     col = col.push(
         widget::button::suggested("Compose")
             .on_press(Message::ComposeNew)
             .width(Length::Fill),
     );
-    col = col.push(widget::vertical_space().height(8));
+    col = col.push(widget::Space::new().height(8.0));
 
     if accounts.is_empty() {
         col = col.push(widget::text::body("No accounts configured"));
@@ -69,7 +69,7 @@ pub fn view<'a>(
             let aid_edit = acct.config.id.clone();
             let aid_remove = acct.config.id.clone();
 
-            let header_row = widget::row()
+            let header_row = widget::Row::new()
                 .spacing(2)
                 .align_y(cosmic::iced::Alignment::Center)
                 .push(
@@ -132,7 +132,7 @@ pub fn view<'a>(
 
                         let ai = acct_idx;
                         let fi = folder_idx;
-                        let mut folder_col = widget::column().spacing(0);
+                        let mut folder_col = widget::Column::new().spacing(0);
 
                         let mut btn = widget::button::text(label)
                             .on_press(Message::SelectFolder(ai, fi))
@@ -202,12 +202,12 @@ pub fn view<'a>(
 
             // Separator between accounts
             if acct_idx < accounts.len() - 1 {
-                col = col.push(widget::vertical_space().height(4));
+                col = col.push(widget::Space::new().height(4.0));
             }
         }
 
         // Add Account button at the bottom
-        col = col.push(widget::vertical_space().height(8));
+        col = col.push(widget::Space::new().height(8.0));
         col = col.push(
             widget::button::standard("+ Add Account")
                 .on_press(Message::AccountAdd)
@@ -220,7 +220,7 @@ pub fn view<'a>(
     let status_pill = status_pill_view(accounts, active_account);
     let diagnostics_panel = diagnostics_view(diagnostics);
 
-    widget::column()
+    widget::Column::new()
         .push(scrollable_folders)
         .push(status_pill)
         .push(diagnostics_panel)
@@ -313,7 +313,7 @@ fn diagnostics_view<'a>(state: DiagnosticsState<'a>) -> Element<'a, Message> {
         Phase::Error => "error",
     };
 
-    let mut col = widget::column()
+    let mut col = widget::Column::new()
         .spacing(2)
         .push(header);
 

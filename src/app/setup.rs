@@ -362,7 +362,7 @@ impl AppModel {
 
     pub(super) fn setup_dialog(&self) -> Element<'_, Message> {
         let model = self.setup();
-        let mut controls = widget::column().spacing(12);
+        let mut controls = widget::Column::new().spacing(12);
 
         let title = model.title();
         let is_token_only = matches!(model.request, SetupRequest::TokenOnly { .. });

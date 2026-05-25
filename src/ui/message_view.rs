@@ -42,7 +42,7 @@ pub fn view<'a>(
             .into();
     }
 
-    let mut col = widget::column().spacing(0);
+    let mut col = widget::Column::new().spacing(0);
 
     if let Some((index, msg)) = selected {
         col = col.push(toolbar(index, msg, selectable));
@@ -84,8 +84,9 @@ fn body_widget<'a>(
     } else {
         let md = markdown::view(
             markdown_items,
-            markdown::Settings::default(),
-            markdown::Style::from_palette(cosmic::iced::Theme::Dark.palette()),
+            markdown::Settings::with_style(markdown::Style::from_palette(
+                cosmic::iced::Theme::Dark.palette(),
+            )),
         )
         .map(Message::LinkClicked);
 
@@ -100,7 +101,7 @@ fn conversation_view<'a>(
     active_email_id: Option<&'a str>,
     selected: Option<(usize, &'a MessageSummary)>,
 ) -> Element<'a, Message> {
-    let mut col = widget::column().spacing(0);
+    let mut col = widget::Column::new().spacing(0);
 
     // Toolbar for the active message
     if let Some((index, msg)) = selected {
@@ -111,7 +112,7 @@ fn conversation_view<'a>(
     for (entry_idx, entry) in conversation.iter().enumerate() {
         let is_active = active_email_id == Some(entry.email_id.as_str());
 
-        let mut card_col = widget::column().spacing(4);
+        let mut card_col = widget::Column::new().spacing(4);
 
         // Header
         card_col = card_col.push(message_header(&entry.summary));
@@ -145,10 +146,9 @@ fn conversation_view<'a>(
                 } else {
                     let md = markdown::view(
                         &entry.markdown_items,
-                        markdown::Settings::default(),
-                        markdown::Style::from_palette(
+                        markdown::Settings::with_style(markdown::Style::from_palette(
                             cosmic::iced::Theme::Dark.palette(),
-                        ),
+                        )),
                     )
                     .map(Message::LinkClicked);
                     card_col = card_col.push(
@@ -195,7 +195,7 @@ fn conversation_view<'a>(
                 .width(Length::Fill)
                 .style(move |theme: &cosmic::Theme| {
                     let cosmic = theme.cosmic();
-                    cosmic::iced_widget::container::Style {
+                    cosmic::iced::widget::container::Style {
                         border: cosmic::iced::Border {
                             color: cosmic.accent_color().into(),
                             width: border_width,
@@ -239,7 +239,7 @@ fn toolbar<'a>(index: usize, msg: &MessageSummary, selectable: bool) -> Element<
     };
     let select_label = if selectable { "Rich text" } else { "Select text" };
 
-    let toolbar = widget::row()
+    let toolbar = widget::Row::new()
         .spacing(8)
         .push(widget::button::text("Reply").on_press(Message::ComposeReply))
         .push(widget::button::text("Forward").on_press(Message::ComposeForward))
@@ -259,7 +259,7 @@ fn toolbar<'a>(index: usize, msg: &MessageSummary, selectable: bool) -> Element<
 }
 
 fn header_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
-    widget::row()
+    widget::Row::new()
         .spacing(8)
         .push(
             widget::text::body(label)
@@ -274,7 +274,7 @@ fn header_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
 }
 
 fn message_header<'a>(msg: &'a MessageSummary) -> Element<'a, Message> {
-    let mut col = widget::column().spacing(4);
+    let mut col = widget::Column::new().spacing(4);
     col = col.push(header_row("From:", &msg.from));
     if !msg.to.is_empty() {
         col = col.push(header_row("To:", &msg.to));
@@ -293,7 +293,7 @@ fn attachments_section<'a>(
     image_handles: &[Option<image::Handle>],
     conversation_email_id: Option<&str>,
 ) -> Element<'a, Message> {
-    let mut att_col = widget::column().spacing(8);
+    let mut att_col = widget::Column::new().spacing(8);
 
     att_col = att_col.push(widget::text::heading(format!(
         "Attachments ({})",
@@ -301,7 +301,7 @@ fn attachments_section<'a>(
     )));
 
     for (i, att) in attachments.iter().enumerate() {
-        let mut card = widget::column().spacing(4);
+        let mut card = widget::Column::new().spacing(4);
 
         // Image preview
         if let Some(Some(handle)) = image_handles.get(i) {
@@ -322,7 +322,7 @@ fn attachments_section<'a>(
         } else {
             Message::SaveAttachment(i)
         };
-        let info = widget::row()
+        let info = widget::Row::new()
             .spacing(8)
             .align_y(cosmic::iced::Alignment::Center)
             .push(

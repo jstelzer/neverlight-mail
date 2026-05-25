@@ -22,7 +22,7 @@ pub(super) fn backfill_stream(
     max_messages: Option<u32>,
     pause: Arc<AtomicBool>,
 ) -> impl futures::Stream<Item = Message> {
-    cosmic::iced_futures::stream::channel(10, move |mut output| async move {
+    cosmic::iced::stream::channel::<Message>(10, move |mut output: cosmic::iced::futures::channel::mpsc::Sender<Message>| async move {
         let page_size = neverlight_mail_core::email::DEFAULT_PAGE_SIZE;
         let aid = account_id.clone();
 
