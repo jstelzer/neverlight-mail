@@ -11,6 +11,21 @@ use neverlight_mail_core::setup::{self, FieldId, SetupInput, SetupRequest};
 
 use super::{AccountState, AppModel, ConnectionState, Message, OAuthSetupPhase, OAuthTokenResult};
 
+fn oauth_account_config(account: &FileAccountConfig, tokens: OAuthTokenResult) -> AccountConfig {
+    let mut config = AccountConfig::from_file_account_oauth(
+        account,
+        tokens.issuer,
+        tokens.client_id,
+        tokens.token_endpoint,
+        tokens.refresh_token,
+        tokens.resource,
+    );
+    if let AuthMethod::OAuth { access_token, .. } = &mut config.auth {
+        *access_token = Some(tokens.access_token);
+    }
+    config
+}
+
 impl AppModel {
     /// Access the setup model, panicking if absent. Only call when you've
     /// already checked `self.setup_model.is_some()`.
@@ -299,6 +314,8 @@ impl AppModel {
             max_messages_per_mailbox: max_msgs,
         };
 
+        let account_config = oauth_account_config(&fac, tokens);
+
         if let Some(pos) = multi.accounts.iter().position(|a| a.id == account_id) {
             multi.accounts[pos] = fac;
         } else {
@@ -311,24 +328,6 @@ impl AppModel {
             }
             return Task::none();
         }
-
-        let account_config = AccountConfig {
-            id: account_id.clone(),
-            label: label.clone(),
-            jmap_url,
-            username,
-            auth: AuthMethod::OAuth {
-                issuer: tokens.issuer,
-                client_id: tokens.client_id,
-                token_endpoint: tokens.token_endpoint,
-                refresh_token: tokens.refresh_token,
-                access_token: Some(tokens.access_token),
-                resource: tokens.resource,
-            },
-            email_addresses,
-            capabilities: AccountCapabilities::default(),
-            max_messages_per_mailbox: None,
-        };
 
         self.oauth_phase = OAuthSetupPhase::Inactive;
         self.oauth_error = None;
@@ -481,5 +480,37 @@ impl AppModel {
         }
 
         dialog.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_reauthorization_preserves_configured_metadata() {
+        let account: FileAccountConfig = serde_json::from_value(serde_json::json!({
+            "id": "account", "label": "Mail",
+            "jmap_url": "https://mail.example/jmap/session", "username": "alice",
+            "auth": {"backend": "keyring"},
+            "email_addresses": ["alice@example.com"],
+            "capabilities": {"supports_push": true, "supports_submission": true},
+            "max_messages_per_mailbox": 42
+        }))
+        .unwrap();
+        let tokens = OAuthTokenResult {
+            issuer: "https://auth.example".into(),
+            client_id: "client".into(),
+            token_endpoint: "https://auth.example/token".into(),
+            resource: account.jmap_url.clone(),
+            access_token: "new-access".into(),
+            refresh_token: "new-refresh".into(),
+        };
+        let config = oauth_account_config(&account, tokens);
+        assert_eq!(config.email_addresses, account.email_addresses);
+        assert!(config.capabilities.supports_push);
+        assert!(config.capabilities.supports_submission);
+        assert_eq!(config.max_messages_per_mailbox, Some(42));
+        assert_eq!(config.token(), Some("new-access"));
     }
 }

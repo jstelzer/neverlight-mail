@@ -471,9 +471,11 @@ impl cosmic::Application for AppModel {
                         selected_msg,
                         &self.preview_attachments,
                         &self.preview_image_handles,
-                        &self.conversation,
-                        &self.conversation_editors,
-                        self.active_conversation_id.as_deref(),
+                        (
+                            &self.conversation,
+                            &self.conversation_editors,
+                            self.active_conversation_id.as_deref(),
+                        ),
                     )
                 }
             };

@@ -2,18 +2,47 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, repair/37-oauth-runtime-metadata]
   pull_request:
     branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: neverlight-mail
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: neverlight-mail
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jstelzer/neverlight-mail-core
+          ref: 013d2d5e33b2c4ad9562710f922f7326bf52c0ae
+          path: neverlight-mail-core
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jstelzer/neverlight-mail-oauth
+          ref: f6b50c7f194019450ccd35d5037e4d515f669235
+          path: neverlight-mail-oauth
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jstelzer/neverlight-mail-html-safe-md
+          ref: 77b89f28bf9ad195fc291bce38e7c2b2ed27b753
+          path: neverlight-mail-html-safe-md
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -30,15 +59,19 @@ jobs:
             libxkbcommon-dev \
             pkg-config
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: neverlight-mail
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --locked --workspace
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings

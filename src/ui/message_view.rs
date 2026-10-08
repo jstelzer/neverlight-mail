@@ -14,10 +14,13 @@ pub fn view<'a>(
     selected: Option<(usize, &'a MessageSummary)>,
     attachments: &[AttachmentData],
     image_handles: &[Option<image::Handle>],
-    conversation: &'a [ConversationEntry],
-    conversation_editors: &'a [text_editor::Content],
-    active_email_id: Option<&'a str>,
+    conversation_state: (
+        &'a [ConversationEntry],
+        &'a [text_editor::Content],
+        Option<&'a str>,
+    ),
 ) -> Element<'a, Message> {
+    let (conversation, conversation_editors, active_email_id) = conversation_state;
     if !conversation.is_empty() {
         return conversation_view(
             conversation,
@@ -121,7 +124,7 @@ fn conversation_view<'a>(
             let has_content = if selectable {
                 conversation_editors
                     .get(entry_idx)
-                    .map_or(false, |e| !e.text().trim().is_empty())
+                    .is_some_and(|e| !e.text().trim().is_empty())
             } else {
                 !entry.markdown_items.is_empty()
             };
